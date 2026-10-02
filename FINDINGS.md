@@ -494,6 +494,47 @@ Searching for any validation of `x20` returns essentially nothing:
 dereferences a lower-EL pointer at up to 408 bytes past its start with no idea how big it is.
 That is the CVE-2019-2318 shape — a TrustZone arbitrary read driven by a non-secure caller.
 
+### Data flow is TZ → EL1, not a TOCTOU (and that is better)
+
+> [!success]
+> **The one open question is settled, and not in the way CVE-2020-3619 describes.** There is no
+> time-of-check/time-of-use window here — and that removes the need for one.
+
+The most promising-looking block was re-examined instruction by instruction:
+
+```
+0x86501f50  ldr  x9, [x20, #0x30]      ; read from the EL1 buffer
+0x86501f58  b.ne 0x86502040            ; ... and branch on it
+0x86501f88  ldr  x4, [x24]             ; value comes from a TZ-owned object
+0x86501f9c  str  x4, [x20]             ; ... and is written to the EL1 buffer
+0x86501fa0  ldr  x5, [x24, #0x8]
+0x86501fa8  str  x5, [x20, #0x8]       ; second word, same direction
+```
+
+**The written value is loaded from `x24`, never from `x20`.** And `x24` is never itself derived
+from `x20` — across the whole handler region it appears only as a frame restore
+(`0x86501b54` / `0x86502068`, `stp`/`ldp x24, x23, [sp, #0x20]`) and as an operand of TZ-owned
+accesses.
+
+So the flow is strictly one-directional: **TZ-owned memory → EL1 buffer**. TZ never re-reads
+the EL1 buffer between validating something in it and writing through it. **CVE-2020-3619's
+TOCTOU shape does not apply to this code.**
+
+> [!tip]
+> **Why that is a better result, not a worse one.** Without a TOCTOU, an attacker does not need
+> to win a race. The EL1-supplied values — `[x20,#0x10]`, `#0x18`, `#0x20` as arguments, and
+> `[x20,#0x30]` as a path selector — **steer** the dispatch, and the offsets are attacker-chosen
+> and unvalidated out to `0x198`. That is a controlled read primitive into TZ state with no
+> timing requirement at all, which is a far more reliable thing to build on than a race that has
+> to be won against a concurrent mapper.
+
+> [!caution]
+> What this does **not** give is the direction we actually want. The write into EL1 memory is
+> fed from TZ-owned state, so it is a *read* of secure data rather than a write of chosen data.
+> Turning that into arbitrary write needs either a different handler where an EL1-supplied value
+> flows *into* the stored word, or a TZ-owned object whose contents the caller can influence.
+> That is now a well-defined search rather than an open question.
+
 ### The same buffer is read and written within a single dispatch
 
 In the SMC ID-dispatch window (`0x86501c94`–`0x86502050`) the caller's buffer is both sourced
@@ -525,10 +566,10 @@ during one TrustZone operation, which is what turns a read primitive into a writ
 > [!caution]
 > **What is and is not established.** Established statically: EL1 controls `x20` at the trap
 > (save/restore pair, above); TZ dereferences it at 11 offsets up to `0x198` with no validation;
-> and the buffer is both read and written within a single dispatch. **Not** established:
-> exploitability. Concretely, that still needs a demonstration that a caller-chosen `x20` yields
-> a useful read *and* a write that survives the re-read — which is the CVE-2020-3619 TOCTOU
-> window and the only remaining unknown.
+> and there is no TOCTOU, because the written value comes from TZ-owned state rather than being
+> re-read from the EL1 buffer. **Not** established: a *write of caller-chosen data*. The EL3
+> into-EL1 direction is a read of secure state, not a write primitive. Closing that gap means
+> finding a handler where an EL1-supplied value flows into the stored word.
 
 ## The route to EL2, and why it runs through EL3
 

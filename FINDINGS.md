@@ -1082,6 +1082,70 @@ without resizing.
 > bug unnecessary for most practical purposes — which is worth weighing before investing more
 > in the bug hunt.
 
+## SBL1 has a second surface: the ramdump path (off on this device)
+
+> [!danger]
+> SBL1 contains a **RAM-dump subsystem** — the surface CVE-2019-14071 describes ("reset handler
+> bypasses access control when the debug path is enabled for RAM dumps"). It is present in this
+> build. **But the enabling device-tree property is absent from both device trees this device
+> actually uses**, so the path is off here.
+
+`sbl1.mbn` is loaded in Ghidra (`ARM:LE:32:v8`, 2295 functions). The auth routine at
+`0x08022088` decompiles exactly as the earlier static pass described — no keys, all crypto
+behind vtables:
+
+```c
+iVar2 = FUN_08022e48();                                     // obtain a security object
+(**(code **)(*(int *)(iVar2 + 4) + 0x28))(&DAT_0805ecc5); // vtable + 0x28
+```
+
+That confirms rather than contradicts "SBL1 is a dead end" for *image authentication*: the trust
+anchor is below SBL1, so there is nothing to patch there.
+
+### But there is another surface: RAM dumps
+
+```
+/mmc1/ram_dump/          VA 0x08024914  -> referenced by FUN_08024518
+boot_sd_ramdump.c
+boot_raw_partition_ramdump.c
+useDebugChan             VA 0x08018de4  -> referenced by FUN_08018dc0
+LOGDUMP.bin              VA 0x0802216c
+```
+
+and the enabling property is read straight from the device tree:
+
+```c
+undefined * FUN_08018dc0(void)
+{
+    iVar1 = FUN_08018c30("useDebugChan", auStack_10);   // DT property lookup
+    if ((iVar1 == 0) && (local_8 != 0)) return &DAT_0805f2b8;
+    return 0;
+}
+```
+
+> [!success]
+> **Checked against both device trees this device uses, and neither enables it.** Decompiled
+> with `dtc` rather than trusting `strings`:
+>
+> | Property | daisy dtb | sakura kernel dtb |
+> | --- | --- | --- |
+> | `useDebugChan` | absent | absent |
+> | `ram_dump` / `minidump` / `ramoops` | absent | absent |
+> | `qcom,complete-ramdump` | absent | absent |
+>
+> The sakura stock `boot.img` has `second_size = 0`, so its DTB is appended to the kernel image
+> rather than carried in the header. Both that appended DTB and the
+> `msm8953-xiaomi-daisy.dtb` the project boots were checked. Ramdump *capability* nodes do exist
+> (`qcom,complete-ramdump`, `qcom,dump-node`, `mem_dump_table`, `qcom,force-reg-dump`), so the
+> subsystem is compiled in — it is the `useDebugChan` gate that is off.
+
+> [!caution]
+> A negative for this device, not for the image. **The code is present and reachable in
+> principle**; only the DT property is absent. Since `useDebugChan` is a plain DT property it is
+> settable by whoever controls the DTB — on this device, whoever controls `boot.img`, the same
+> constraint that applies to everything else. Worth remembering that this path is closed here
+> *only because this DT does not enable it*.
+
 ## SBL1 image authentication is a dead end
 
 > [!summary]

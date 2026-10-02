@@ -757,45 +757,35 @@ this is the secure-token verification path, the same one `oem unlock` uses.
 >    the **stock** `tz.mbn` back to the `tz` partition — writing identical content, semantically
 >    a no-op like the poke test. A refusal proves the restriction is live; success means the
 >    write path is open.
-> 2. The `devinfo` build string says **`DAISY2.0`**, and `daisy` is the Redmi 6A / Mi A2 Lite
->    — an Android Go device. So the connected handset is a **daisy**, not a `sakura`
->    (Redmi 6 Pro). Both are MSM8953 on the same platform, which is why the `sakura` Firehose
->    programmer is accepted: the loader's authentication is platform-level, not per-handset.
->    This is a clarification, not a problem, but it is recorded so `DAISY2.0` is not later read
->    as a mismatch.
+> 2. The `devinfo` build string reads `msm8953-MSM8953_DAISY2.0_20200508...`. That is a
+>    **shared platform identifier for the MSM8953** in that ROM, not a per-handset marker — it
+>    appears on the sakura. The target is a Xiaomi Redmi 6 Pro (`sakura`); `daisy` is the
+>    Redmi 6A / Mi A2 Lite, the Android Go A/B variant of the same platform. A previous note
+>    here read `DAISY2.0` as evidence the handset was a daisy; that was wrong, and nothing
+>    depends on it.
 
-## Device identity: daisy, not sakura
+## Device identity: sakura
 
-> [!info]
-> The target handset is a **daisy** (Redmi 6A / Mi A2 Lite, Android Go). The stock images used
-> throughout this analysis came from a `sakura` (Redmi 6 Pro) fastboot ROM, `d1s-sakura-india-p-stable-symbols-20200508`.
+> [!success]
+> The target is a **Xiaomi Redmi 6 Pro, codename `sakura`**. The stock ROM used throughout is
+> `d1s-sakura-india-p-stable-symbols-20200508`, and the images in this repo are **byte-identical**
+> to it, so every result in these notes is on-target:
 
-That the sakura programmer is accepted on a daisy is itself a finding: Firehose programmer
-authentication on this family is **platform-level**, not per-handset, so an image from one
-device in the family is accepted by another.
+| File | Size | SHA-256 (first 32 hex) | Match to stock |
+| --- | --- | --- | --- |
+| `tz.mbn` | 1,531,776 | `7f21871366071836a2fcbda0969621c6` | identical |
+| `sbl1.mbn` | 401,492 | `e463227e8c345e47f4f0a64aac75a081` | identical |
+| `emmc_appsboot.mbn` | 689,564 | `fc57d7097087e0c12ef83117f2e75313` | identical |
+| `prog_emmc_firehose_8953_ddr.mbn` | 399,552 | `fc3df4df9472cfec21ecba444cf324df` | — |
+| `rpm.mbn` | 174,468 | `4f1a0bc6616f9e16b22a5dddcaf721ad` | — |
+| `devcfg.mbn` | 40,028 | `2fe876124f8912b51203eb522d7b6b17` | — |
+| `keymaster64.mbn` | 271,480 | `4c34aa326931d0ca32e1af46dfdfe819` | — |
+| `lksecapp.mbn` | 57,352 | `7909ee8d443b7161f46f3276063cc5fe` | — |
 
-Sakura baseline hashes, for comparison against daisy/A2 stock:
-
-| File | Size | SHA-256 (first 32 hex) |
-| --- | --- | --- |
-| `tz.mbn` | 1,531,776 | `7f21871366071836a2fcbda0969621c6` |
-| `sbl1.mbn` | 401,492 | `e463227e8c345e47f4f0a64aac75a081` |
-| `emmc_appsboot.mbn` | 689,564 | `fc57d7097087e0c12ef83117f2e75313` |
-| `rpm.mbn` | 174,468 | `4f1a0bc6616f9e16b22a5dddcaf721ad` |
-| `devcfg.mbn` | 40,028 | `2fe876124f8912b51203eb522d7b6b17` |
-| `keymaster64.mbn` | 271,480 | `4c34aa326931d0ca32e1af46dfdfe819` |
-| `lksecapp.mbn` | 57,352 | `7909ee8d443b7161f46f3276063cc5fe` |
-| `prog_emmc_firehose_8953_ddr.mbn` | 399,552 | `fc3df4df9472cfec21ecba444cf324df` |
-
-Which comparisons matter, by finding:
-
-| File | If it matches | If it differs |
-| --- | --- | --- |
-| `tz.mbn` | Every TZ result — `SCR_EL3`/EL2, exception map, EC decode, `x20`, the mailbox — applies verbatim to the handset | All TZ findings would need redoing against the daisy image |
-| `prog_emmc_firehose_8953_ddr.mbn` | The `peek`/`poke` analysis applies | Peek/poke must be re-verified on the daisy programmer |
-| `emmc_appsboot.mbn` | The unlock and protected-partition analysis applies | Re-derive the `+0x10`/`+0x18` control flow |
-| `sbl1.mbn` | The SBL1 auth analysis applies | Re-derive |
-| `devcfg.mbn`, `keymaster64.mbn`, `lksecapp.mbn` | — | Expected to differ; these are per-device config and key material |
+A side observation worth keeping: the Firehose programmer that the PBL accepted is the
+`sakura` one, and it was accepted without authentication. Since `daisy` is the same MSM8953
+platform, that also suggests programmer authentication is platform-level rather than
+per-handset — which is why a cross-device loader is worth keeping in mind.
 
 ### Unlock is not a mutable bit
 

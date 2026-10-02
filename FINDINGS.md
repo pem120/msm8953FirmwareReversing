@@ -425,6 +425,68 @@ No unsigned image is ever presented to the unmodified PBL, and no physical fuse 
 > Items 2 and 3 are answerable only at runtime. Item 1 is answerable with `adb reboot edl` or
 > a test-point entry and one Sahara handshake.
 
+## The x20 surface: no bounds check, read and written in one call
+
+> [!danger]
+> This is the concrete counterpart to CVE-2019-2318 and CVE-2020-3619 in this specific
+> `tz.mbn`. Both are read straight out of the binary.
+
+### x20 is dereferenced at 11 offsets, up to 408 bytes, and never validated
+
+Every `[x20 + N]` access in the image was enumerated. The offsets touched are:
+
+```
+0x000  0x004  0x008  0x010  0x018  0x020  0x030  0x048  0x0f8  0x100  0x198
+```
+
+The highest is **`[x20,#0x198]`** — 408 bytes past a pointer the lower EL supplied.
+
+Searching for any validation of `x20` returns essentially nothing:
+
+- `cmp x22, x20` at `0x86501aec` — a register-to-register compare, not a range check
+- `cmp w9/w8, #0x200, LSL #12` at `0x86501938` / `0x865018d0` — compares against `0x200000`,
+  nothing to do with `x20`
+
+**There is no length argument, no range check and no masking on `x20` anywhere.** TZ
+dereferences a lower-EL pointer at up to 408 bytes past its start with no idea how big it is.
+That is the CVE-2019-2318 shape — a TrustZone arbitrary read driven by a non-secure caller.
+
+### The same buffer is read and written within a single dispatch
+
+In the SMC ID-dispatch window (`0x86501c94`–`0x86502050`) the caller's buffer is both sourced
+and written, with values flowing between offsets:
+
+```
+; arguments read from the caller's buffer
+0x86501d94  ldr  x18, [x20]
+0x86501d9c  ldr  x3,  [x20, #0x8]
+0x86501da4  ldr  x4,  [x20, #0x10]
+0x86501dac  ldr  x5,  [x20, #0x18]
+0x86501db4  ldr  x6,  [x20, #0x20]
+
+; ... and later, results written back into it
+0x86501e88  ldr  x0,  [x20, #0x10]      ; re-read
+0x86501e8c  ldr  w1,  [x20, #0x18]      ; re-read
+0x86501e94  str  xzr, [x20]             ; write
+
+; and the most interesting block:
+0x86501f50  ldr  x9,  [x20, #0x30]      ; read a further offset
+0x86501f9c  str  x4,  [x20]             ; x4 came from [x20,#0x10]
+0x86501fa8  str  x5,  [x20, #0x8]        ; x5 came from [x20,#0x18]
+```
+
+Values read from one offset are written to another, and the same offsets are re-read later in
+the same call. **That is the CVE-2020-3619 shape** — non-secure memory touched more than once
+during one TrustZone operation, which is what turns a read primitive into a write.
+
+> [!caution]
+> **What is and is not established.** Statically proven: `x20` is dereferenced at 11 offsets up
+> to `0x198` with no validation, and the buffer is both read and written within a single
+> dispatch. **Not** established: that `x20` is in fact EL1-controlled — that still rests on the
+> three instructions from the exception stub and is what `tzprobe` is meant to confirm. Nor is
+> exploitability proven. Both halves are needed: the missing bounds check is useless if the
+> caller cannot actually choose `x20`.
+
 ## The route to EL2, and why it runs through EL3
 
 > [!danger]

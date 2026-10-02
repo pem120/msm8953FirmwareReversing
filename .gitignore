@@ -20,3 +20,11 @@ FWRE.*
 
 # Scratch
 *.tmp
+
+# kernel module build output
+tools/tzprobe/*.o
+tools/tzprobe/*.ko
+tools/tzprobe/*.mod
+tools/tzprobe/*.mod.c
+tools/tzprobe/.*.cmd
+tools/tzprobe/.tmp_*

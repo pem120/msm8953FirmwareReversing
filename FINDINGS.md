@@ -288,6 +288,76 @@ is CVE-2015-6639 (PRDiag/QSEECOM) and an IPQ40xx QSEE PoC that is explicitly ARM
 - Tooling: `gh` is a dispatcher at `~/.local/bin/gh` routing the five GhidraMCP bridge verbs
   to the skill client and everything else to the GitHub CLI at `/usr/bin/gh`.
 
+## A read-then-write primitive via a cross-CPU mailbox
+
+> [!success]
+> This is the strongest result so far. It comes from chasing a single global,
+> `DAT_8650ebb8`, that two different exception handlers touch.
+
+### The two halves
+
+**Producer — `ec_21_handler` (`0x8650247c`)** stores an attacker-controlled 32-bit value:
+
+```c
+if (FUN_865000d4() + 1 == (ulong)DAT_8650d0a9) {     // doorbell: "CPU+1 is asking"
+    DAT_8650d0a9 = 0;                                 // acknowledge
+    DAT_8650ebb8 = (uint32_t)*(x20 + 8);               // read from an EL1-chosen address
+}
+```
+
+`x20` is EL1's `x20` at trap time, so `*(x20 + 8)` is a 32-bit read at an address the caller
+picks. `DAT_8650d0a9` is a doorbell naming the requesting CPU.
+
+**Consumer — `FUN_86501b4c` (`0x86501b4c`)** writes that value back out:
+
+```c
+uVar3 = (uint32_t)*param_1 & 0x3f00ffff;              // read the FID from the return slot
+...
+if (uVar3 == 0x04000000) {
+    if (DAT_8650ebb8 != 0xdeadbeef) {                 // slot already filled
+        *param_1 = (ulong)DAT_8650ebb8;               // <-- 64-bit write
+        goto done;
+    }
+    DAT_8650d0a9 = FUN_865000d4() + 1;                 // otherwise arm the doorbell
+}
+```
+
+`param_1` is **also** EL1-controlled. `FUN_86501b4c` is called from `el3_exception_common` at
+`0x865013b8`, and `x0` is set two instructions earlier by the frame restore:
+
+```
+8650135c  ldp x30, x0, [sp, #0xf0]     ; x0 = saved SP_EL0
+865013b8  bl  0x86501b4c                ; param_1 = SP_EL0 at trap time
+```
+
+So `param_1` is the EL1 stack pointer at the moment of the trap — caller-chosen.
+
+### Why this is more than the SMC return ABI
+
+Everywhere else in this dispatcher, `*x20 = 0` or `*x20 = 1` writes a *constant* into the
+caller's return slot. That is the SMC return-value ABI and is harmless. Here the value being
+written is **whatever the caller previously asked TZ to read**, and the destination is a
+**different, also caller-chosen** address:
+
+- call 1: `x20` -> address A, so TZ reads 32 bits from `A + 8` into the mailbox
+- call 2: `SP_EL0` -> address B, so TZ writes those 32 bits (zero-extended to 64) to `[B]`
+
+A and B are independent. That is a 32-bit arbitrary read followed by a 64-bit arbitrary write
+of the result.
+
+> [!question]
+> The gate is a cross-CPU doorbell: the producer only fires when the trapping CPU's id plus
+> one equals the value in `DAT_8650d0a9`. The intended flow is that one CPU arms the doorbell
+> and a *peer* CPU fills the slot. Whether a caller can satisfy that gate unilaterally —
+> by choosing which CPU traps and what `x20` holds — needs runtime validation. That is the
+> open question, and it decides whether this is a usable primitive or an intra-service
+> mailbox that happens to be reachable.
+
+> [!caution]
+> **Not yet an exploit.** It requires EL1 code execution to set `x20` and `SP_EL0` before the
+> SMC, and the mailbox gate has not been shown satisfiable from a single thread. What is
+> verified is the data flow and the absence of any ownership check on either endpoint.
+
 ## x20 audit: first pass
 
 Systematic decompilation of the handlers that touch `[x20 + N]`. Result so far: **the data

@@ -1031,20 +1031,63 @@ deps_tzprobe.o := \
   /home/ishu/Projects/Android/msm8953/linux/arch/arm64/include/asm/module.h \
   /home/ishu/Projects/Android/msm8953/linux/include/asm-generic/module.h \
     $(wildcard include/config/HAVE_MOD_ARCH_SPECIFIC) \
-  /home/ishu/Projects/Android/msm8953/linux/include/linux/vmalloc.h \
-    $(wildcard include/config/HAVE_ARCH_HUGE_VMALLOC) \
-  /home/ishu/Projects/Android/msm8953/linux/arch/arm64/include/asm/vmalloc.h \
-    $(wildcard include/config/HAVE_ARCH_HUGE_VMAP) \
-  /home/ishu/Projects/Android/msm8953/linux/arch/arm64/include/asm/pgtable.h \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/mm.h \
+    $(wildcard include/config/HAVE_ARCH_MMAP_RND_BITS) \
+    $(wildcard include/config/HAVE_ARCH_MMAP_RND_COMPAT_BITS) \
+    $(wildcard include/config/PPC32) \
+    $(wildcard include/config/X86_USER_SHADOW_STACK) \
+    $(wildcard include/config/RISCV_USER_CFI) \
+    $(wildcard include/config/MEM_SOFT_DIRTY) \
+    $(wildcard include/config/ARCH_HAS_PKEYS) \
+    $(wildcard include/config/ARCH_PKEY_BITS) \
+    $(wildcard include/config/PARISC) \
+    $(wildcard include/config/SPARC64) \
+    $(wildcard include/config/HAVE_ARCH_USERFAULTFD_MINOR) \
+    $(wildcard include/config/MSEAL_SYSTEM_MAPPINGS) \
+    $(wildcard include/config/FIND_NORMAL_PAGE) \
+    $(wildcard include/config/SHMEM) \
+    $(wildcard include/config/HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD) \
+    $(wildcard include/config/HAVE_GIGANTIC_FOLIOS) \
+    $(wildcard include/config/ARCH_HAS_PTE_SPECIAL) \
     $(wildcard include/config/ARCH_SUPPORTS_PMD_PFNMAP) \
-    $(wildcard include/config/PAGE_TABLE_CHECK) \
+    $(wildcard include/config/ARCH_SUPPORTS_PUD_PFNMAP) \
+    $(wildcard include/config/ASYNC_KERNEL_PGTABLE_FREE) \
+    $(wildcard include/config/SPLIT_PTE_PTLOCKS) \
+    $(wildcard include/config/HIGHPTE) \
+    $(wildcard include/config/DEBUG_VM_RB) \
+    $(wildcard include/config/PAGE_POISONING) \
+    $(wildcard include/config/INIT_ON_ALLOC_DEFAULT_ON) \
+    $(wildcard include/config/INIT_ON_FREE_DEFAULT_ON) \
+    $(wildcard include/config/DEBUG_PAGEALLOC) \
+    $(wildcard include/config/ARCH_WANT_OPTIMIZE_DAX_VMEMMAP) \
+    $(wildcard include/config/HUGETLBFS) \
+    $(wildcard include/config/MAPPING_DIRTY_HELPERS) \
+    $(wildcard include/config/PAGE_POOL) \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/pgalloc_tag.h \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/mmap_lock.h \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/range.h \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/page_ext.h \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/stacktrace.h \
+    $(wildcard include/config/ARCH_STACKWALK) \
+    $(wildcard include/config/STACKTRACE) \
+    $(wildcard include/config/HAVE_RELIABLE_STACKTRACE) \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/page_ref.h \
+    $(wildcard include/config/DEBUG_PAGE_REF) \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/pgtable.h \
     $(wildcard include/config/ARCH_HAS_NONLEAF_PMD_YOUNG) \
+    $(wildcard include/config/ARCH_HAS_HW_PTE_YOUNG) \
+    $(wildcard include/config/GUP_GET_PXX_LOW_HIGH) \
+    $(wildcard include/config/ARCH_WANT_PMD_MKWRITE) \
+    $(wildcard include/config/HAVE_ARCH_SOFT_DIRTY) \
     $(wildcard include/config/ARCH_ENABLE_THP_MIGRATION) \
+    $(wildcard include/config/HAVE_ARCH_HUGE_VMAP) \
+    $(wildcard include/config/X86_ESPFIX64) \
+  /home/ishu/Projects/Android/msm8953/linux/arch/arm64/include/asm/pgtable.h \
+    $(wildcard include/config/PAGE_TABLE_CHECK) \
     $(wildcard include/config/ARM64_CONTPTE) \
   /home/ishu/Projects/Android/msm8953/linux/arch/arm64/include/asm/proc-fns.h \
   /home/ishu/Projects/Android/msm8953/linux/arch/arm64/include/asm/tlbflush.h \
   /home/ishu/Projects/Android/msm8953/linux/include/linux/mmu_notifier.h \
-  /home/ishu/Projects/Android/msm8953/linux/include/linux/mmap_lock.h \
   /home/ishu/Projects/Android/msm8953/linux/include/linux/interval_tree.h \
   /home/ishu/Projects/Android/msm8953/linux/arch/arm64/include/asm/fixmap.h \
     $(wildcard include/config/ACPI_APEI_GHES) \
@@ -1052,6 +1095,29 @@ deps_tzprobe.o := \
   /home/ishu/Projects/Android/msm8953/linux/include/asm-generic/fixmap.h \
   /home/ishu/Projects/Android/msm8953/linux/arch/arm64/include/asm/por.h \
   /home/ishu/Projects/Android/msm8953/linux/include/linux/page_table_check.h \
+  /home/ishu/Projects/Android/msm8953/linux/include/asm-generic/pgtable_uffd.h \
+    $(wildcard include/config/PTE_MARKER_UFFD_WP) \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/memremap.h \
+    $(wildcard include/config/DEVICE_PRIVATE) \
+    $(wildcard include/config/PCI_P2PDMA) \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/ioport.h \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/cacheinfo.h \
+    $(wildcard include/config/ACPI_PPTT) \
+    $(wildcard include/config/ARCH_HAS_CPU_CACHE_ALIASING) \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/cpuhplock.h \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/iommu-debug-pagealloc.h \
+    $(wildcard include/config/IOMMU_DEBUG_PAGEALLOC) \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/huge_mm.h \
+    $(wildcard include/config/PGTABLE_HAS_HUGE_LEAVES) \
+    $(wildcard include/config/PERSISTENT_HUGE_ZERO_FOLIO) \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/vmstat.h \
+    $(wildcard include/config/VM_EVENT_COUNTERS) \
+    $(wildcard include/config/DEBUG_TLBFLUSH) \
+    $(wildcard include/config/PER_VMA_LOCK_STATS) \
+  /home/ishu/Projects/Android/msm8953/linux/include/linux/vm_event_item.h \
+    $(wildcard include/config/BALLOON) \
+    $(wildcard include/config/BALLOON_MIGRATION) \
+    $(wildcard include/config/X86) \
   /home/ishu/Projects/Android/msm8953/linux/include/linux/utsname.h \
     $(wildcard include/config/PROC_SYSCTL) \
   /home/ishu/Projects/Android/msm8953/linux/include/linux/nsproxy.h \

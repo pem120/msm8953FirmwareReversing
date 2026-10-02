@@ -691,16 +691,79 @@ A pointer of `0x000000010b1880b0` compares equal to the allowlist entry `0x0b188
 to an entirely different address. The allowlist is not type-safe as a 64-bit pointer validation.
 
 > [!caution]
-> **What is proven and what is not.** Proven from the instructions: the validation truncates to
-> 32 bits and the write uses the full pointer. **Not** proven: that any particular high-half
-> alias is mapped and writable under the target's full MMU configuration. That is
-> environment-dependent and is the remaining question — but this is a genuine defect in the
-> check itself, not a speculative one.
+> **Exploitability looks unlikely — a dedicated pass came back negative.** The allowlisted
+> addresses are *not* TZ image addresses. `readelf -l` gives TZ mappings as `0x86500000–0x86508567`,
+> `0x86509000–0x86515f6b`, `0x86516000–0x86520fff`, `0x86540000–0x865e30db`, `0x865e4000–0x865f750f`,
+> `0x865f8000–0x8665047f`, `0x86651000–0x8665af57`, `0x86666000–0x8669dfff`, `0x8669e000–0x8669ffff`,
+> `0x866fb000–0x866fcfff`. **None of the 18 fall inside any of them.**
+
+> The only references to the sixteen `0x0b...` values in the entire image are the allowlist table
+> itself; same for `0x01c46000`. The apparent second occurrence of `0x0193d100` at `0x865ced3e` is a
+> byte pattern straddling an instruction boundary, with no xref. String searches for `ipc`, `smsm`,
+> `rproc`, `pdh`, `glink`, `qrtr`, `rpmi`, `aoss` found nothing identifying them. RPM/SSC strings
+> exist (`RPM_WDOG`, `RPM_ERR`, `smem_boot_init: ...`) but tie to nothing here.
+
+> So they are opaque externally-supplied constants, plausibly an MMIO or shared-memory window,
+> and **the image contains no evidence a +4 GiB alias is mapped**. The EL3 MMU is configured at
+> runtime (`TTBR0_EL3`/`MAIR_EL3`/`TCR_EL3` written by helpers such as `0x865077d8`), so page
+> tables are not recoverable statically — but absent supporting evidence, and a 4 GiB alias being
+> an unusual thing to map deliberately, this is **a real but probably unexploitable** defect.
 
 > [!tip]
-> The 18 allowlisted values (`0x0b1880b0`, `0x0b1980b8`, `0x0193d100`, `0x01c46000`, …) are low
-> physical addresses in what looks like the RPM/secure IPC window. On a 32-bit-addressable
-> interpretation they are the "correct" targets; the defect is that nothing pins the high half.
+> **Net assessment.** The type confusion is genuine: the check truncates to `w0` while the store
+> uses the full `x20`. What changed is the expected payoff. It is a hardening bug — a 32-bit
+> allowlist guarding a 64-bit pointer — not a path to EL3 on its own. The write is bracketed by
+> lock calls on a TZ global at `0x86514300`, so the intent was plainly to restrict writes to a
+> small fixed set, and it mostly does. I would not spend more time weaponising the alias; the
+> other two primitives are the better use of effort.
+
+> [!note]
+> The 16 `0x0b...` values are still worth identifying from outside the image. A regular 8-byte
+> stride across four regions is characteristic of a hardware register block or IPC doorbell array,
+> and knowing what they address would say what a legitimate `poke` there was for.
+
+### Where the EL1-injected state actually ends up
+
+> [!summary]
+> A dedicated pass traced every consumer. **None of the three injection points reaches a control
+> register, a function pointer, or a dispatch index.** The one real sink — the EL3 control-register
+> restore — is fed from fields the callers do not write.
+
+The per-CPU allocator `FUN_86502c2c` indexes a table at `DAT_8650d0b0 / 0xd4d0 / 0xd2c0 / 0xd700`
+(0x210 bytes each, index 3 pooled per CPU). Mapping the three injections against it:
+
+| Injection | Destination | What it writes | Verdict |
+| --- | --- | --- | --- |
+| `smc_copy_caller_0x48` (`0x86501a64`) | **index 2** | fixed 0x48 bytes at offsets `0x00..0x40`, plus `+0x48` → `ctx[0x38]` | Read sink only |
+| vendor family `0x340105ff`–`0x34010603` | index 1 / index 3 | five words into offsets `0x00..0x20` | No readers found |
+| `0x04000020` → `FUN_86502e9c` | **index 3** | `caller[0]`, `caller[1]`, `caller+0x48` → `idx3+0x1c0`, constants at `+0x1d0`/`+0x208` | Data only |
+
+> [!danger]
+> **The sink is real but out of reach of these injections.** `tz_ctx_restore_el1` writes
+> EL3 control registers from a context struct:
+> ```
+> 0x86500ebc  msr elr_el3,  x2      <- ctx[0x17]
+> 0x86500ec4  msr scr_el3,  x1      <- ctx[0x18]
+> 0x86500ec8  msr spsr_el3, x2      <- ctx[0x19]
+> 0x86500ed0  msr cptr_el3, ...     <- ctx[0x1a]
+> ```
+> But the injections write **offsets 0x00–0x40** (index 2) or 0x00–0x20 (index 1/3). **None of
+> them reaches `0x17`–`0x1a`.** That is the single most important negative result in the project:
+> the obvious EL3-control-flow primitive is real, and our injections cannot reach it.
+
+Other consumers checked and cleared:
+
+- **Case `0x11`** dereferences `idx3[0x40]` — an **EL1-selected read address**, the best of the lot, but a read.
+- `FUN_86502efc` stores the EL1 argument at offset 0 and it is later returned to EL1 as a result value — not a pointer, not called.
+- `FUN_865033e8` only acts on the fixed pair (1, 0); `FUN_86503470` decompiles as a no-op; `FUN_8650320c` ignores its argument apart from per-CPU counters; `FUN_86507268` is a memcpy-like helper always called with fixed lengths.
+- `FUN_86502b20` restores EL1 registers from offsets ≥ 0x118 — not injected.
+- **No `blr` fed by EL1 data was found anywhere in the reachable set.**
+
+> [!tip]
+> This is a clean, well-bounded result rather than a failure. The next question is precise: is
+> there an injection path that reaches offsets `0x17`–`0x1a` of an index-2 or index-3 context —
+> i.e. anything that writes past `0x40` in the same object, or a call to the restore helper with a
+> context the caller can shape. That is a tractable xref question, not a search from scratch.
 
 ### Other paths in the same dispatch
 

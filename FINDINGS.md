@@ -494,7 +494,63 @@ Searching for any validation of `x20` returns essentially nothing:
 dereferences a lower-EL pointer at up to 408 bytes past its start with no idea how big it is.
 That is the CVE-2019-2318 shape — a TrustZone arbitrary read driven by a non-secure caller.
 
-### Data flow is TZ → EL1, not a TOCTOU (and that is better)
+> [!danger]
+> **A caller-controlled pointer now lands in TZ-owned state.** Found by a parallel pass over
+> `0x86501a00`–`0x86501c00`. This is the write direction that was missing.
+
+### `tz_copy_caller_struct` puts 72 bytes of EL1 data into TZ context
+
+An exception handler reachable from a lower-EL SMC copies a caller-supplied structure into a
+TZ-owned per-CPU context block:
+
+```asm
+0x86501a74  mov  x20, x0              ; x0 = saved EL1 x1, an arbitrary caller pointer
+0x86501a7c  bl   0x86502c2c           ; -> TZ-owned per-CPU context (dest in x22)
+0x86501ac8  ldr  x12, [x20, #0x48]    ; EL1 value
+0x86501acc  stp  x12, x13, [x22, #0x1c0]   ; -> context[0x38], a controlled pointer
+0x86501b00  mov  w8, #0x9
+0x86501b04  ldr  x17, [x20], #0x8      ; 9 quadwords from EL1
+0x86501b0c  str  x17, [x22], #0x8      ; into TZ context offsets 0x00..0x40
+0x86501b10  b.ne 0x86501b04
+```
+
+So **EL1 words 0–7 land at `context[0x00..0x38]` and word 8 at `context[0x40]`**, with
+`context[0x38]` additionally taken from `source+0x48`.
+
+> [!success]
+> **`context[0x40]` is subsequently dereferenced as a pointer** — case `0x11` in the same
+> handler uses it as a load address. EL1 therefore chooses the address TZ reads from. That is an
+> attacker-controlled read, and it is the first genuinely EL1-influenced pointer in TZ-owned
+> state this analysis has produced.
+
+### Two other things in the same range
+
+**Chosen-page memory attributes.** The caller pointer is page-aligned and a length derived from
+`align(param_1 + 0x1050) - align(param_1)`, then handed to an attribute-management routine with
+flags `0x8065`, then again with `0x800`:
+
+```asm
+0x86501a94  and  x19, x20, #0x1000        ; page-align the caller pointer
+0x86501aa8  mov  w3, #0x8065
+0x86501ab8  bl   0x8650532c                ; first transition
+0x86501b34  mov  w3, #0x800
+0x86501b44  b    0x8650532c                ; second transition
+```
+
+The caller influences the start and the page count. **The semantics of `0x8065`/`0x800` are not
+yet resolved** — that is the highest-value unknown now. If those flags carry no-execute or
+secure-attribute bits, this is a chosen-page attribute primitive.
+
+**The architectural address-translation instruction is reachable.** For cases `0x2c`/`0x2d`,
+`[x20+8]` is used as the operand of `AT S12E1R` / `AT S12E1W` — the caller supplies the
+translation-table address that EL3 then reads.
+
+> [!caution]
+> **Not yet a write primitive.** The copied context fields are EL1-controlled, but whether any
+> of them later reaches a control register, a function pointer, or a secure write outside this
+> range is unproven. That is the next question.
+
+## Data flow is TZ → EL1, not a TOCTOU (and that is better)
 
 > [!success]
 > **The one open question is settled, and not in the way CVE-2020-3619 describes.** There is no

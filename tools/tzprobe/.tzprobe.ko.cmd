@@ -1,1 +1,0 @@
-savedcmd_tzprobe.ko := ld.lld -r -EL  -maarch64elf -z norelro -z noexecstack --build-id=sha1  -T /home/ishu/Projects/Android/msm8953/linux/scripts/module.lds -o tzprobe.ko tzprobe.o tzprobe.mod.o .module-common.o

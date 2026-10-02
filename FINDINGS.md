@@ -423,6 +423,77 @@ primitive on its own.
 > secure-world state. Turning that into code execution requires finding a receiving field that
 > is subsequently dereferenced or used as a length — which is not yet found.
 
+## Live test candidates
+
+> [!info]
+> Everything below needs the handset. Nothing here has been attempted. Collected here so the
+> device work can be done in one sitting rather than rediscovered piecemeal, and ordered so
+> each test either confirms a static finding or kills it cheaply.
+
+Ordered by value per unit of effort. Tests 1–3 are cheap and either confirm the foundation of
+all the static work or invalidate it.
+
+### 1. Confirm the SMC argument register — does the x20 model hold?
+
+> [!question]
+> Every static finding rests on `x20` being EL1's `x20` at trap time. It is inferred from
+> three instructions (no handler assigns it; the restores read `[sp,#0xa0]`; the generic entry
+> stub stored EL1's `x20` there), not observed. If this is wrong, the whole x20 analysis is
+> void.
+
+Method: kernel module that sets `x20` to a known scratch address, issues an SMC that TZ
+answers, and checks whether the value TZ read came from that address. A one-shot confirmation
+that makes the rest trustworthy.
+
+### 2. Mailbox doorbell gate — is the primitive usable?
+
+> [!danger]
+> This decides whether [[A read-then-write primitive via a cross-CPU mailbox]] is a real
+> arbitrary read-then-write or an unreachable intra-service mailbox.
+
+Method: drive the EC `0x21` producer with `x20` pointing at known data, pinned to successive
+CPUs, and observe whether `DAT_8650ebb8` gets populated. The gate is
+`FUN_865000d4() + 1 == DAT_8650d0a9`; the question is whether one thread can arm
+`DAT_8650d0a9` and then satisfy the producer on the right CPU, or whether it genuinely needs a
+peer. If satisfiable, follow through the consumer at masked FID `0x04000000` and confirm
+`[SP_EL0]` receives the value.
+
+### 3. Which handset is this, and is there a `hyp` partition?
+
+> [!tip]
+> Cheapest test in the list, and it settles the [[EL2 is architecturally unreachable]] note.
+
+Method: read the GPT partition list. The codename decides which Firehose loader applies
+([[Flash and delivery paths for MSM8953]]), and a `hyp` partition would force a revision of
+the EL2 conclusion.
+
+### 4. Runtime confirmation of `SCR_EL3`
+
+Method: any TZ-exposed path that reports the EL3 `SCR_EL3` value, or boot-time tracing. The
+static claim is that TZ writes `0xE00` and never sets `HCE`. Worth confirming on the live
+device, since a single differing value would undermine the note.
+
+### 5. Enumerate accepted SMC function IDs at runtime
+
+Method: sweep masked FIDs and record which return a result versus `-1`. Gives the real,
+device-accepted ABI rather than the static dispatch map, and may surface IDs the static map
+misses.
+
+### 6. EDL read/write round-trip
+
+> [!warning]
+> Brick risk. Do this only after 1–5, and on a sacrificial partition first.
+
+Method per [[Flash and delivery paths for MSM8953]] phase 4: enter EDL 9008, load a Firehose
+programmer for this exact device, print the GPT, read a known partition and compare it
+byte-for-byte against the existing `/dev/mem` dump, then write and read back a non-critical
+partition. The point is to prove Firehose genuinely writes eMMC rather than accepting XML and
+returning misleading success.
+
+> [!caution]
+> Test 1 is the one to do first. It is the cheapest test on the list and it either validates
+> or invalidates the assumption every other static finding rests on.
+
 ## Next steps
 
 - [ ] Audit every handler that touches `[x20 + N]` for anything beyond

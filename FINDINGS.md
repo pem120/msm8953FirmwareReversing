@@ -639,6 +639,43 @@ translation-table address that EL3 then reads.
 > of them later reaches a control register, a function pointer, or a secure write outside this
 > range is unproven. That is the next question.
 
+### CORRECTION: the vendor command IDs were wrong throughout this document
+
+> [!danger]
+> I repeatedly stated the five-entry vendor table at `0x86508328` is reached by IDs
+> `0x340105ff`–`0x34010603`. **That is wrong — those IDs are not reachable.**
+
+The index is built by subtracting a constant assembled at `0x86501d64`:
+
+```asm
+0x86501d64  mov  w15, #0xcbff0000
+0x86501d68  movk w15, #0x5ff         ; w15 = 0x05ffcbff = -0x3400fa01
+0x86501d6c  add  w13, w28, w15        ; w13 = w28 - 0x3400fa01  (mod 2^32)
+0x86501d70  cmp  w13, #0x4
+0x86501d74  b.hi 0x86501dc0           ; bounds check -> default
+0x86501d80  ldr  x15, [x15, x13, LSL #3]
+0x86501d84  br  x15
+```
+
+The five reachable IDs are **`0x3400fa01`–`0x3400fa05`**:
+
+| Entry | Index | Handler |
+| --- | --- | --- |
+| 0 | 0 | `0x86501d88` |
+| 1 | 1 | `0x86501dc0` (the shared default handler) |
+| 2 | 2 | `0x865027c4` |
+| 3 | 3 | `0x86501eb0` |
+| 4 | 4 | `0x86501ecc` |
+
+Checked directly: `0x340105ff` yields index `0xbfe` and `0x34010603` yields `0xc02` — both far
+above `#4`, both rejected by the `b.hi`.
+
+> [!caution]
+> The error came from my own earlier reading of the jump table and then propagated into **two
+> subagent briefs**, so their handler attributions for `0x8650208c`, `0x865020d0` and
+> `0x865020f0` should be treated as **unverified** — those are table entries at indices ≥ 5 that
+> the guard cannot reach. Any finding attributed to those three addresses needs re-checking.
+
 ## Data flow is TZ → EL1, not a TOCTOU (and that is better)
 
 > [!success]
@@ -681,8 +718,8 @@ TOCTOU shape does not apply to this code.**
 > That is now a well-defined search rather than an open question.
 
 > [!danger]
-> **A real bug, verified: the `0x02000502` allowlist validates 32 bits and writes 64.** This is
-> the first confirmed memory-safety defect in this firmware, and it is the write primitive.
+> **A real bug, verified — but two of my descriptions of it were wrong.** The type confusion is
+> genuine; the details below correct what I previously wrote.
 
 ### The type confusion, instruction by instruction
 
@@ -707,17 +744,19 @@ Inside the validator, the comparison is 32-bit:
 0x86503380  bls   0x86503368
 ```
 
-and the store uses the **full pointer**:
+and the store uses the **full pointer**, but is a **32-bit** store:
 
 ```asm
-0x86503314  mov  x20, x0                ; 64-bit preserved
+0x86503314  mov  x20, x0                ; 64-bit pointer preserved
 0x8650331c  bl   0x8650335c             ; 32-bit check
-0x86503340  str  w19, [x20]             ; 64-bit write
+0x86503340  str  w19, [x20]             ; 32-bit write through the 64-bit pointer
 ```
 
-**So the check is `low32(A2) == allowlisted`, while the write is `*(uint32_t *)A2 = low32(A3)`.**
-A pointer of `0x000000010b1880b0` compares equal to the allowlist entry `0x0b1880b0` yet refers
-to an entirely different address. The allowlist is not type-safe as a 64-bit pointer validation.
+**So the check is `low32(A2) == allowlisted`, and the write is `*(uint32_t *)A2 = low32(A3)`** —
+a 32-bit check guarding a 64-bit pointer. I previously called this "a 64-bit write", which was
+wrong: the write *width* is 32 bits; it is the *pointer* that is 64-bit and only half-validated.
+A pointer of `0x000000010b1880b0` compares equal to `0x0b1880b0` yet refers elsewhere, and 4
+bytes land there.
 
 > [!caution]
 > **Exploitability looks unlikely — a dedicated pass came back negative.** The allowlisted

@@ -1,35 +1,49 @@
-# MSM8953 TrustZone (EL3) reverse engineering — working notes
+# MSM8953 TrustZone EL3 research
 
-Target: **MSM8953** (Snapdragon 425/625) phone. Goal: obtain code execution in the ARM
-**EL3 secure world** (and evaluate EL2). All analysis is on the requester's own device.
+~research #android #msm8953 #trustzone #reverse-engineering #arm64
 
-Status: research in progress. No exploit yet. Findings below are evidence-backed unless
-marked as inference.
+> [!abstract]
+> Working notes toward code execution in the ARM **EL3 secure world** on an MSM8953
+> (Snapdragon 425/625) phone, and an evaluation of EL2.
+> All analysis is on the requester's own device.
+> No exploit yet — see [[Central finding: TZ dereferences EL1-controlled pointers]]
+> for the live lead and [[Two independent problems]] for why it may not pay off.
 
-## Artifacts in this repo
+> [!info]
+> Everything below is evidence-backed from the binary unless marked as inference.
 
-| File | Contents |
-|---|---|
-| `FINDINGS.md` | This document — consolidated results |
-| `attack_surface_map.md` | Static map of `tz.mbn` (dispatch tables, strings, bug candidates) |
-| `trustzone_vulnerability_inventory.md` | Public CVE/QPSA research for this chip family |
-| `flash_delivery_paths.md` | EDL / Firehose / unlock research — can we even write a modified image? |
+## Documents
 
-## 1. Target and boot chain
+> [!summary]
+> These are the other notes in this set.
+
+- **[[Static attack surface map]]** — `attack_surface_map.md` — dispatch tables, string
+  inventory, bug candidates.
+- **[[TrustZone vulnerability inventory]]** — `trustzone_vulnerability_inventory.md` —
+  public CVE/QPSA triage for this chip family.
+- **[[Flash and delivery paths]]** — `flash_delivery_paths.md` — EDL / Firehose / unlock
+  research. Answers whether a modified image can be written at all.
+
+## Target and boot chain
 
 | Image | Arch | Entry | Role |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `sbl1.mbn` | ELF32 ARM | `0x08008010` | Stage-2 bootloader; authenticates and jumps to TZ |
 | `tz.mbn` | ELF64 AArch64 | `0x86500000` | **EL3 Secure Monitor (QSEE)** |
 | `emmc_appsboot.mbn` | ELF32 ARM | `0x8f600000` | App bootloader (high-level `fastboot`) |
 
-Chain: `PBL -> sbl1 -> tz -> emmc_appsboot -> boot.img`.
+Chain: `PBL -> sbl1 -> tz -> emmc_appsboot -> boot.img`
+
 `tz.mbn` self-identifies as `TZ.BF.4.0.5-202044`, built **2019-05-17**.
 
-## 2. EL2 is architecturally unreachable — SETTLED
+> [!warning]
+> Raw firmware images are OEM copyrighted and are gitignored. Keep them local.
 
-This was the original question ("EL2 or EL3 for KVM/hyp"). Answer: **EL2 does not exist on
-this device**, and cannot be reached from Linux without changing EL3 code.
+## EL2 is architecturally unreachable
+
+> [!summary]
+> This was the original question ("EL2 or EL3 for KVM/hyp"). Answer: **EL2 does not exist on
+> this device** and cannot be reached from Linux without changing EL3 code.
 
 There are exactly 9 `SCR_EL3` accesses in `tz.mbn`. Three write the constant
 `SCR_EL3 = 0xE00` at `0x865001a0`, `0x865010f4`, `0x8650128c`. Decoding the two bits that
@@ -55,24 +69,26 @@ The EL3 exception handler toggles only those two bits:
 **`HCE` is never set to 1 anywhere in the image.** TZ explicitly clears it before every
 `ERET` to a lower EL. A lower-EL HVC therefore traps to EL3, never to EL2.
 
-Corroborated independently by the kernel tree: `arch/arm64/boot/dts/qcom/msm8953.dtsi`
-declares `compatible = "arm,psci-1.0"` with `method = "smc"` — PSCI owned by an EL3 monitor,
-with no EL2 stage in the chain.
+Corroborated independently by the kernel tree:
+`arch/arm64/boot/dts/qcom/msm8953.dtsi` declares `compatible = "arm,psci-1.0"` with
+`method = "smc"` — PSCI owned by an EL3 monitor, with no EL2 stage in the chain.
 
-Caveat: bits 9–11 of `0xE00` are also set. These are the hypervisor-restriction bits
-(`HVD`/`HVI` on my reading) and would lock EL2 down further, but I could **not** confirm the
-bit names from tooling — `search_data_types` for `SCR_EL3` returns nothing, so Ghidra is
-not carrying named bit-fields. Bits 0 and 1 are the ones that matter and are certain.
+> [!warning]
+> Bits 9–11 of `0xE00` are also set. These are the hypervisor-restriction bits
+> (`HVD`/`HVI` on my reading) and would lock EL2 down further, but I could **not** confirm
+> the bit names from tooling — `search_data_types` for `SCR_EL3` returns nothing, so Ghidra
+> is not carrying named bit-fields. Bits 0 and 1 are the ones that matter and are certain.
 
 A research subagent pushed back that an HVC handler alone does not prove a hypervisor is or
 isn't present. That is fair in general, but the `SCR_EL3.HCE` evidence above is direct and
 does not depend on which files ship. Cheap cross-check if desired: see whether the device has
 a `hyp` partition.
 
-**Consequence:** to get EL2 you must modify TZ (set `HCE=1` and boot the kernel at EL2) or
-exploit TZ. There is no Linux-side or kernel-config route.
+> [!tip]
+> **Consequence:** to get EL2 you must modify TZ (set `HCE=1` and boot the kernel at EL2) or
+> exploit TZ. There is no Linux-side or kernel-config route.
 
-## 3. Exception model
+## Exception model
 
 - `vbar_el3 = 0x86504000` (literal at `0x86500378`).
 - 16 vector stubs, `0x80` bytes apart. `VBAR_EL3` points at **code**, not a pointer table.
@@ -83,13 +99,14 @@ exploit TZ. There is no Linux-side or kernel-config route.
 - Jump table at VA `0x86508350` (file offset `0xb350`), entries `0x00`–`0x38`, entry `0x39`
   is a `0xdeaddead` sentinel. **49 unique handler targets.**
 
-## 4. EC decoding — correction
+## EC decoding correction
 
-The static-analysis report labelled index `0x17` as "SMC from AArch64 lower EL" and `0x2a` as
-"HVC". **That is wrong.** Using the AArch64 ESR encoding:
+> [!warning]
+> The static-analysis report labelled index `0x17` as "SMC from AArch64 lower EL" and `0x2a`
+> as "HVC". **That is wrong.** Using the AArch64 ESR encoding:
 
 | EC | Actual meaning | Jump-table target |
-|---|---|---|
+| --- | --- | --- |
 | `0x11` | SMC from AArch32 lower EL | `0x86502310` |
 | `0x12` | **SMC from AArch64 lower EL** | `0x86502324` |
 | `0x17` | Permission fault from lower EL, AArch64 | `0x86502368` |
@@ -102,9 +119,10 @@ sets `SCR_EL3.NS` before returning. It is actually a **data abort from EL1** —
 exactly consistent with the observed behaviour, since a fault taken from EL1 must return to
 EL1 in the non-secure state. The EL2 conclusion is unaffected.
 
-## 5. Central structural finding — TZ dereferences EL1-controlled pointers
+## Central finding: TZ dereferences EL1-controlled pointers
 
-This is the most important result so far.
+> [!success]
+> This is the most important result so far.
 
 Every handler in the dispatch table indexes through **`x20`**:
 
@@ -148,20 +166,26 @@ ok:
   *x20 = uVar3;                            // write 0 or 1 to [x20] — attacker address
 ```
 
-Important caveat, so this is not oversold: **this particular path is not an arbitrary write
-of a controlled value.** It writes only `0` or `1`, and that is the documented SMC
-return-value ABI — Linux passes a result-buffer pointer in a register and TZ fills it in.
-The masked FID values sit in the `0x02000xxx` SMCCC range; the mask `0x3fffffff` strips bits
-30/31, so the original SMC32/SMC64 and standard/vendor encoding is not recoverable from the
-comparison alone. (Consequence: searching the binary for a literal `0xC200xxxx` finds nothing
-*by construction* — do not read that as "there is no vendor SMC ABI".)
+> [!caution]
+> **This particular path is not an arbitrary write of a controlled value.** It writes only
+> `0` or `1`, and that is the documented SMC return-value ABI — Linux passes a result-buffer
+> pointer in a register and TZ fills it in.
 
-**The actual hunt is therefore:** find any handler that does *more* with an `x20`-derived
-pointer than compare-then-write-a-constant — a copy, an index, a length, a nested
-dereference. The FID whitelist is currently the only thing standing between an
-attacker-controlled address and an EL3 read/write.
+The masked FID values sit in the `0x02000xxx` SMCCC range; the mask `0x3fffffff` strips
+bits 30/31, so the original SMC32/SMC64 and standard/vendor encoding is not recoverable from
+the comparison alone.
 
-## 6. False positive killed: `FUN_86503304`
+> [!tip]
+> Consequence: searching the binary for a literal `0xC200xxxx` finds nothing *by
+> construction*. Do not read that as "there is no vendor SMC ABI".
+
+> [!question]
+> **The actual hunt is therefore:** find any handler that does *more* with an `x20`-derived
+> pointer than compare-then-write-a-constant — a copy, an index, a length, a nested
+> dereference. The FID whitelist is currently the only thing standing between an
+> attacker-controlled address and an EL3 read/write.
+
+## False positive killed: FUN_86503304
 
 The attack-surface report ranked this first, at "High/medium" — handler `0x02000502` loads
 `x0=[x20+0x10]`, `w1=[x20+0x18]` and writes through the caller-derived pointer. Ghidra
@@ -192,10 +216,11 @@ IPC handle addresses**, not magic numbers:
 0x0193d100                  0x01c46000
 ```
 
-That is a correct allowlist of known-safe write targets. **Candidate #1 is a false
-positive** — killed early rather than three days in.
+> [!success]
+> That is a correct allowlist of known-safe write targets. **Candidate #1 is a false
+> positive** — killed early rather than three days in.
 
-## 7. EL3 context save/restore primitive
+## EL3 context save and restore
 
 `FUN_86500d70` (save) / `FUN_86500e30` (restore) handle the full EL1+EL3 context:
 
@@ -218,52 +243,61 @@ FUN_86502f50:
 ```
 
 The struct comes from TZ's own per-CPU save area, written at exception entry by the save side.
-So this is the normal exception-return path. **The bug hunt target is anything that lets EL1
-influence that save block, or reach `FUN_86500e30` with attacker data.**
+So this is the normal exception-return path.
 
-## 8. Two independent problems
+> [!tip]
+> The bug hunt target is anything that lets EL1 influence that save block, or reach
+> `FUN_86500e30` with attacker data.
+
+## Two independent problems
 
 | | Problem | Status |
-|---|---|---|
-| A | Memory-corruption bug in `tz.mbn` -> EL3 code execution | In progress. One lead killed (§6). Structural weakness identified (§5). |
+| --- | --- | --- |
+| A | Memory-corruption bug in `tz.mbn` → EL3 code execution | In progress. One lead killed. Structural weakness identified. |
 | B | Get that code to survive boot past PBL/SBL | **Blocked**, and likely the harder one |
 
-Per `flash_delivery_paths.md`: EDL + Firehose (`bkerler/edl`; public loaders exist for
+Per [[Flash and delivery paths]]: EDL + Firehose (`bkerler/edl`; public loaders exist for
 `daisy` and `rosy`) can put arbitrary bytes on eMMC. But Firehose does **not** bypass PBL/SBL
 image authentication, and `lk2nd` cannot help because it runs *after* SBL1. No publicly
 documented route exists for booting an unsigned modified `tz`/`sbl1`.
 
-**Solving A does not get EL3 unless B also falls.** Recommend establishing a working EDL
-read/write round-trip and confirming exactly which partitions the stock bootloader will
-accept before investing further in bug hunting — it determines whether the project is viable.
+> [!warning]
+> **Solving A does not get EL3 unless B also falls.** Recommend establishing a working EDL
+> read/write round-trip and confirming exactly which partitions the stock bootloader will
+> accept before investing further in bug hunting — it determines whether the project is
+> viable.
 
-## 9. Public vulnerability research
+## Public vulnerability research
 
-See `trustzone_vulnerability_inventory.md`. Summary: **no verified AArch64 MSM8937/8953 EL3
-exploit PoC exists.** This is original RE, not exploit reuse.
+See [[TrustZone vulnerability inventory]].
+
+> [!summary]
+> No verified AArch64 MSM8937/8953 EL3 exploit PoC exists. This is original RE, not exploit
+> reuse.
 
 Notable correction: CVE-2014-9711 is a Websense TRITON XSS and is unrelated to Android;
 Towelroot is CVE-2014-3153, a Linux futex bug — neither is an EL3 issue. Closest public work
 is CVE-2015-6639 (PRDiag/QSEECOM) and an IPQ40xx QSEE PoC that is explicitly ARMv7-only.
 
-## 10. Ghidra state
+## Ghidra state
 
 - `tz.mbn` imported and analysed; 2954 functions.
 - 48 function bodies created at the 49 exception jump-table targets (1 already existed),
   named `ec_<idx>_handler` / `default_handler`; plus `el3_exception_common` at `0x865012d0`.
 - Program saved.
-
-Tooling note: `gh` is a dispatcher at `~/.local/bin/gh` routing the five GhidraMCP bridge
-verbs to the skill client and everything else to the GitHub CLI at `/usr/bin/gh`.
+- Tooling: `gh` is a dispatcher at `~/.local/bin/gh` routing the five GhidraMCP bridge verbs
+  to the skill client and everything else to the GitHub CLI at `/usr/bin/gh`.
 
 ## Next steps
 
-1. Audit every handler that touches `[x20 + N]` for anything beyond compare-and-write-constant.
-   Prioritise `0x86502420` (uses `[x20+0xf8]`, `[x20+0x100]`, `[x20+8]`),
-   `0x8650247c` (offsets `0x8,0x10,0x18,0x20,0x40` copied into an allocated object),
-   `0x8650257c` (two caller args into indirect callbacks), and the copy/zero helpers
-   `0x8650532c` / `0x86505478` for length validation.
-2. Resolve the two 64->32 truncation sites at `0x865025d0` / `0x865025e8` and check whether
-   their results feed later range checks.
-3. Confirm EDL works on the exact handset and read back a partition byte-for-byte against
-   the existing `/dev/mem` dump.
+- [ ] Audit every handler that touches `[x20 + N]` for anything beyond
+      compare-and-write-constant. Prioritise `0x86502420` (uses `[x20+0xf8]`, `[x20+0x100]`,
+      `[x20+8]`), `0x8650247c` (offsets `0x8,0x10,0x18,0x20,0x40` copied into an allocated
+      object), `0x8650257c` (two caller args into indirect callbacks), and the copy/zero
+      helpers `0x8650532c` / `0x86505478` for length validation.
+- [ ] Resolve the two 64→32 truncation sites at `0x865025d0` / `0x865025e8` and check whether
+      their results feed later range checks.
+- [ ] Confirm which handset this is — `daisy` / `sakura` / `whyred` / `rosy` map to different
+      devices and different loader availability.
+- [ ] Confirm EDL works on the exact handset and read back a partition byte-for-byte against
+      the existing `/dev/mem` dump.

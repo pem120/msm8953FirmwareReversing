@@ -1,0 +1,13 @@
+# Raw firmware images — OEM copyrighted blobs, keep local only.
+*.mbn
+*.img
+
+# Ghidra project state
+*.gpr
+*.rep/
+*.lock
+*.lock~
+FWRE.*
+
+# Scratch
+*.tmp

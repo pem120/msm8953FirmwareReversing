@@ -542,6 +542,47 @@ So **EL1 words 0–7 land at `context[0x00..0x38]` and word 8 at `context[0x40]`
 > attacker-controlled read, and it is the first genuinely EL1-influenced pointer in TZ-owned
 > state this analysis has produced.
 
+### The attribute routine is a page-table walker, and it is bounded
+
+> [!danger]
+> `FUN_8650532c` is not a general attribute setter. It is a **page-table walk that writes PTL
+> descriptors**, and the caller controls the range it operates on.
+
+The dispatcher `FUN_86505de0` masks all address arguments to 33 bits (`local_68 = 0x1ffffffff`),
+and the gate before the walk is explicit:
+
+```
+(uVar17 & 0xfffffffffffff000) != uVar17   -> reject   // must be page-aligned
+(uVar28 & 3) != 0                          -> reject   // size must be 4-aligned
+uVar17 >> 0x21 != 0                        -> reject   // address must be < 2^33
+0x800000 < uVar28                          -> reject   // size must be < 8 MiB
+0x200000000 < uVar24 + uVar28*0x400        -> reject   // end must stay < 2^37
+(uVar17 & 0x3fffffff) == 0 && (uVar28 & 0xfffff) == 0   // 1 GiB-aligned, 1 MiB multiple
+```
+
+and then the walk itself:
+
+```
+*puVar31 = uVar26 | uVar17;               // <-- writes a page-table entry
+    ... per-page: flag test (uVar29 & 3) == 3, then (uVar29 & 1) -> FUN_86506d7c
+    ... and FUN_86506b30(param_1, uVar28, 2, lVar23) per iteration
+FUN_86506dc4(param_1);                     // TLB/cache maintenance to match
+```
+
+> [!success]
+> So `tz_copy_caller_struct` is not merely copying a struct: an EL1-chosen pointer selects a
+> **1 GiB-aligned region below 8 GiB**, and TZ walks and rewrites the page-table entries covering
+> it, then does the TLB maintenance to make the new attributes live. The attacker chooses the
+> region; the flags (`0x8065`, `0x800`) choose the attributes.
+
+> [!caution]
+> **What that gives is not yet EL3, and the limit matters.** The alignment and size constraints
+> are real: the region must be 1 GiB-aligned and the size a 1 MiB multiple, so this is coarse —
+> it is not a way to remap an arbitrary single page. What it *is* is host-driven control of
+> memory attributes over a large attacker-chosen range, which on its own is a serious primitive
+> (making a secure page non-secure, or a data page executable, depending on what `0x8065`/`0x800`
+> decode to). Resolving those two flag values is the single highest-value remaining analysis.
+
 ### Two other things in the same range
 
 **Chosen-page memory attributes.** The caller pointer is page-aligned and a length derived from

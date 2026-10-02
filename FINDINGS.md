@@ -288,6 +288,71 @@ is CVE-2015-6639 (PRDiag/QSEECOM) and an IPQ40xx QSEE PoC that is explicitly ARM
 - Tooling: `gh` is a dispatcher at `~/.local/bin/gh` routing the five GhidraMCP bridge verbs
   to the skill client and everything else to the GitHub CLI at `/usr/bin/gh`.
 
+## x20 audit: first pass
+
+Systematic decompilation of the handlers that touch `[x20 + N]`. Result so far: **the data
+flow is one-directional — EL3 *reads* through attacker-controlled pointers into TZ-owned
+memory.** No write back through an `x20`-derived address was found, other than the `0`/`1` SMC
+return value already covered above.
+
+| Handler | Address | What it does with `x20` |
+| --- | --- | --- |
+| `ec_1d` | `0x86502420` | Reads `[x20+0xf8]`, `[x20+0x100]`, `[x20+8]`; stores into a TZ per-CPU block from `FUN_86502c2c(3)` |
+| `ec_21` | `0x8650247c` | Reads `[x20+8]`, `+0x10`, `+0x18`, `+0x20`, `+0x40`; copies into a TZ object. Also `DAT_8650ebb8 = (uint)[x20+8]` — an attacker-controlled 32-bit value stored in a global |
+| `ec_2a` | `0x8650257c` | Passes `x20[1]` and `x20[2]` (i.e. `[x20+8]`, `[x20+0x10]`) into `FUN_86505478` as two fully attacker-controlled 64-bit values |
+
+Representative, `ec_1d`:
+
+```c
+lVar1 = FUN_86502c2c(3);                             // TZ-owned per-CPU block
+*(lVar1 + 0xf8)   = *(x20 + 0xf8);                   // attacker addr -> TZ state
+*(lVar1 + 0x100)  = *(x20 + 0x100);                  // attacker addr -> TZ state
+if (*(long *)(x20 + 8) != 0) { ... }                 // attacker addr, branch
+```
+
+> [!tip]
+> This is an **arbitrary 64-bit read primitive feeding TZ state** rather than an arbitrary
+> write. That is still a genuine finding — EL3 will dereference any address an EL1 caller
+> supplies, with no ownership check. The escalation path is whether any of the receiving TZ
+> fields is later *used* as a pointer or length. That is the thing to trace next.
+
+### The `ec_2a` chain
+
+`ec_2a` is the most interesting lead, but it is also the deepest:
+
+```
+ec_2a (0x8650257c)
+  -> FUN_86505478(x20[1], x20[2])        stores both at obj+0x60 / obj+0x68
+    -> FUN_86506a1c(obj)                 state-machine setup, steps 1/2/3
+      -> FUN_86506a68(obj, step)         walks a linked list at obj+0x28/+0x30/+0x40
+        -> FUN_86506b30(obj, node, ...)  512-iteration page-table walker
+```
+
+`FUN_86506b30` steps `param_4 += 0x1000` for 0x200 iterations and tests `(uVar2 & 3) == 3`,
+which is the ARM PTE-validity test — so it is a page-table/TLB maintenance routine. The two
+attacker-controlled values at `obj+0x60`/`obj+0x68` are not visibly consumed within this
+window; they are reached later through `param_1` offsets.
+
+> [!caution]
+> `ec_2a` is EC `0x2a` = "System register access from EL2, AArch64". If that decode is right,
+> TZ contains a handler for traps originating *at EL2* — which is odd given `SCR_EL3.HCE` is
+> never set. Either the path is vestigial, or my EC assignment for `0x2a` is wrong. Worth
+> resolving, because it bears on the [[EL2 is architecturally unreachable]] conclusion.
+
+### The memory-attribute helper
+
+`FUN_8650532c` is an `SCmMemProtect`-style call: it masks with `0x1ffffffff` (33-bit physical
+address space) and forwards start/end/page-count/flags to the memory-subsystem service object.
+Its caller at `0x86502548` computes `x2 = (x9 + 0xfff) >> 10` — a page count derived from
+caller data. Changing memory attributes on attacker-chosen pages would be a meaningful
+primitive on its own.
+
+> [!danger]
+> **Net status: no arbitrary write through `x20` has been demonstrated.** What is established
+> is that EL3 performs unchecked reads at EL1-supplied addresses and copies the results into
+> secure-world state. Turning that into code execution requires finding a receiving field that
+> is subsequently dereferenced or used as a length — which is not yet found.
+
 ## Next steps
 
 - [ ] Audit every handler that touches `[x20 + N]` for anything beyond

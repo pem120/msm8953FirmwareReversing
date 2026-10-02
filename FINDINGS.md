@@ -17,12 +17,12 @@
 > [!summary]
 > These are the other notes in this set.
 
-- **[[Static attack surface map]]** — `attack_surface_map.md` — dispatch tables, string
-  inventory, bug candidates.
-- **[[TrustZone vulnerability inventory]]** — `trustzone_vulnerability_inventory.md` —
-  public CVE/QPSA triage for this chip family.
-- **[[Flash and delivery paths]]** — `flash_delivery_paths.md` — EDL / Firehose / unlock
-  research. Answers whether a modified image can be written at all.
+- **[[Static attack surface map for tz.mbn]]** — `attack_surface_map.md` — dispatch tables,
+  string inventory, bug candidates.
+- **[[TrustZone vulnerability inventory for MSM8953]]** — `trustzone_vulnerability_inventory.md`
+  — public CVE/QPSA triage for this chip family.
+- **[[Flash and delivery paths for MSM8953]]** — `flash_delivery_paths.md` — EDL / Firehose /
+  unlock research. Answers whether a modified image can be written at all.
 
 ## Target and boot chain
 
@@ -256,7 +256,7 @@ So this is the normal exception-return path.
 | A | Memory-corruption bug in `tz.mbn` → EL3 code execution | In progress. One lead killed. Structural weakness identified. |
 | B | Get that code to survive boot past PBL/SBL | **Blocked**, and likely the harder one |
 
-Per [[Flash and delivery paths]]: EDL + Firehose (`bkerler/edl`; public loaders exist for
+Per [[Flash and delivery paths for MSM8953]]: EDL + Firehose (`bkerler/edl`; public loaders exist for
 `daisy` and `rosy`) can put arbitrary bytes on eMMC. But Firehose does **not** bypass PBL/SBL
 image authentication, and `lk2nd` cannot help because it runs *after* SBL1. No publicly
 documented route exists for booting an unsigned modified `tz`/`sbl1`.
@@ -269,7 +269,7 @@ documented route exists for booting an unsigned modified `tz`/`sbl1`.
 
 ## Public vulnerability research
 
-See [[TrustZone vulnerability inventory]].
+See [[TrustZone vulnerability inventory for MSM8953]].
 
 > [!summary]
 > No verified AArch64 MSM8937/8953 EL3 exploit PoC exists. This is original RE, not exploit

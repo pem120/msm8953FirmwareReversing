@@ -686,6 +686,81 @@ found and refused with *"Critical partition flashing is not allowed"* (VA `0x8f6
 > secure-boot bypass. That is a genuinely useful negative — it was the cheapest remaining path,
 > and it is not there.
 
+## CORRECTION: this device is not protected, and I misread the branch
+
+> [!danger]
+> **The conclusion above is wrong.** I misidentified `0x8f633434` as a refusal path. It is not.
+> Re-derived against the live `devinfo`, the actual state of this device is that critical
+> partitions are **not** blocked.
+
+### What I got wrong
+
+`0x8f633434` loads a pointer and calls `FUN_8f642610`, which I assumed printed an error. It is
+plain `strlen` — it walks a string counting bytes to NUL. The following instruction pair is a
+**partition-name comparison**, not a message:
+
+```asm
+8f633434  movw r0, 0x396c        ; VA 0x8f67396c = "avb_custom_key"
+8f63. .  bl  0x8f642610          ; r0 = strlen("avb_custom_key") = 13
+8f633440  movw r1, 0x396c
+8f633448  cpy  r2, r0
+8f63344c  cpy  r0, r5            ; r0 = the partition being flashed
+8f633450  bl  0x8f6426c8         ; compare(name, "avb_custom_key", 13)
+8f633458  beq  0x8f6335f8
+```
+
+`"avb_custom_key"` is a *partition name*. Both the `beq 0x8f633434` branches and the
+`critical != 0` fall-through land on a dispatcher, not on a refusal.
+
+### The live `devinfo` state
+
+Read over Firehose (`edl r devinfo devinfo.bin`, 8 MiB). The magic is `ANDROID-BOOT!` — hyphen,
+not underscore, which is why a string search for the underscore form finds nothing.
+
+```
++0x00  ANDROID-BOOT!...
++0x10  01 00 00 00   -> 1     the unlock/"tested" flag
++0x18  01 00 00 00   -> 1     the "critical" flag
++0x60  msm8953-MSM8953_DAISY2.0_20200508...
+```
+
+**`+0x18` is already 1.** The refusal string *"Critical partition flashing is not allowed"*
+lives at `0x8f63361c`, which is only reachable via `beq 0x8f63361c` — i.e. **only when the
+critical flag is zero**. On this device it is one, so that branch is dead.
+
+### Corrected control flow
+
+```asm
+8f63341c  bl   0x8f62ae48        ; keymaster TZ-app probe
+8f633420  cmp  r0, #0x1
+8f633424  ble  0x8f633434        ; ==1 -> "avb_custom_key" dispatcher (not a block)
+8f633428  ldr  r3, [r6,#0x18]    ; critical flag
+8f633430  beq  0x8f63361c        ; only here -> "Critical partition flashing is not allowed"
+                                  ; else fall through to 0x8f633434
+```
+
+`FUN_8f62ae48` probes the string `"keymaster"` (VA `0x8f66bcc8`) via `FUN_8f607270`, memoising
+1 or 2 at `0x8f68b910`. The surrounding strings — `generate_Token_failed`, `verify`,
+`compare_ok`, `compare_fail`, `sn_ok`, `sn_fail`, `Failure to load TZ app: lksecapp` — confirm
+this is the secure-token verification path, the same one `oem unlock` uses.
+
+> [!success]
+> **Net effect:** on a device where `devinfo+0x18 == 1`, the protected-partition refusal is
+> unreachable. Aleph reported the same `0x10`/`0x18` fields on the Xiaomi Note 5A as the lock
+> bits that gate critical bootloader state — and on this device they are already set, so that
+> particular unlock step is moot rather than blocked.
+
+> [!question]
+> **Two things to confirm before acting on this.**
+>
+> 1. Whether fastboot `flash:` to `tz` is in fact accepted. The cheapest safe test is to flash
+>    the **stock** `tz.mbn` back to the `tz` partition — writing identical content, semantically
+>    a no-op like the poke test. A refusal proves the restriction is live; success means the
+>    write path is open.
+> 2. The `devinfo` build string says **`DAISY2.0`**, and `daisy` is the Redmi 6A codename, not
+>    `sakura` (Redmi 6 Pro). Both are MSM8953, and the programmer is accepted either way, but the
+>    mismatch should be resolved before assuming the analysis matches the handset.
+
 ### Unlock is not a mutable bit
 
 `oem unlock` at `0x8f631c20` calls the token verifier at `0x8f631c44`:

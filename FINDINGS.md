@@ -425,6 +425,77 @@ No unsigned image is ever presented to the unmodified PBL, and no physical fuse 
 > Items 2 and 3 are answerable only at runtime. Item 1 is answerable with `adb reboot edl` or
 > a test-point entry and one Sahara handshake.
 
+## Live result: the gate is open
+
+> [!success]
+> Tested on the device in authenticated EDL. **The PBL accepts the stock sakura programmer with
+> no authentication, and `peek` works as an arbitrary physical memory read.**
+
+```
+$ lsusb | grep 05c6
+05c6:9008 Qualcomm, Inc. Gobi Wireless Modem (QDL mode)
+
+$ edl --loader=.../prog_emmc_firehose_8953_ddr.mbn
+main - Device detected :)
+main - Mode detected: firehose
+```
+
+No account, no token, no post-Sahara challenge. The stock programmer is accepted as-is, so
+every concern raised in [[Flash and delivery paths for MSM8953]] about PK hashes and OEM
+authorisation turned out not to apply to this device.
+
+### The decompilation predicted the device's behaviour
+
+Peeking address `0x0` was refused by the programmer itself:
+
+```
+firehose - [LIB]: Error: ... <data><log value="Invalid parameters" /></data>
+```
+
+That is exactly the guard in the decompiled `peek` handler — *"Invalid parameters"* is emitted
+when `local_440 == 0 || size == 0`. The static analysis and the live device agree.
+
+### Arbitrary physical read confirmed
+
+```
+$ edl --loader=... peekhex 0x1000 32
+b'2c008de528108de54400000a010053e30190a0e32d9084052c608de22d008415'
+```
+
+Little-endian, that decodes as plausible ARM code (`e58d002c` = `str r2,[sp,#44]`,
+`e58d1028` = `str r8,[sp,#40]`). An arbitrary 32-bit address was read with no range check,
+exactly as `FUN_0802e194` shows.
+
+### Write path accepted, not yet proven to change a value
+
+`pokehex 0x1000 2c008de528108de5` — writing the eight bytes **already present** — completed
+with exit 0, no *"Invalid parameters"*, and the follow-up read showed the bytes unchanged. That
+proves the programmer accepts and executes the write path, but it is a semantic no-op.
+
+> [!question]
+> **Still to do:** a *value-changing* write, to prove a value actually lands. That genuinely
+> modifies device memory, so it wants a deliberate choice of address. A read-modify-write
+> (peek, poke a different pattern, read back, restore) on an address that is known to be data
+> rather than executing code would close it.
+
+### Partition layout (from Firehose `printgpt`)
+
+| Partition | Offset | Length |
+| --- | --- | --- |
+| `sbl1` | `0x00180000` | `0x80000` (512 KiB) |
+| `sbl1bak` | `0x00200000` | `0x80000` |
+| `aboot` | `0x00c00000` | `0x100000` (1 MiB) |
+| `dip` | `0x00e00000` | `0x100000` |
+| **`tz`** | **`0x01000000`** | **`0x200000` (2 MiB)** |
+| `tzbak` | `0x01200000` | `0x200000` |
+| `devinfo` | `0x01800000` | `0x80000` |
+
+There are also four custom partitions `bk1`–`bk4` of type `EFI_LINUX_DAYA`, which is not a
+standard GUID and is worth identifying.
+
+The `tz` partition is 2 MiB and `tz.mbn` is 1.46 MiB, so a modified secure-world image would fit
+without resizing.
+
 > [!warning]
 > This does not remove the need for [[A read-then-write primitive via a cross-CPU mailbox]]. The
 > two are independent: a TZ bug gives code execution *inside* the secure world, while the

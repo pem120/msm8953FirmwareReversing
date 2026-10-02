@@ -329,11 +329,101 @@ the PBL's page tables, copy the PBL into writable memory, remap the PBL virtual 
 the clone, patch the verification, and continue booting. No physical ROM is touched and no
 unsigned image is ever presented to the real PBL.
 
+> [!success]
+> **Verified in this programmer: both are unrestricted, and neither is behind the
+> authentication gate.** See [[The sakura Firehose programmer is an arbitrary memory primitive]].
+
+## The sakura Firehose programmer is an arbitrary memory primitive
+
+> [!danger]
+> `peek` and `poke` in `prog_emmc_firehose_8953_ddr.mbn` perform **unauthenticated arbitrary
+> physical memory read and write at any 32-bit address**, with no range check. This is the
+> precondition for the Aleph PBL-remapping secure-boot bypass, and it is present in the loader
+> that ships with the device.
+
+### The command dispatch has an auth gate, and peek/poke are outside it
+
+`FUN_0803ee58` is the Firehose command dispatcher. It has an authentication concept — there is
+a literal string *"ERROR: Only nop and sig tag can be recevied before authentication."* (sic)
+and an auth flag at `DAT_08060618`. That flag gates an early, specific command set only. After
+that, commands fall through a flat sequence of `FUN_0804eae2(&DAT_08071778, <name>)` string
+comparisons with **no flag check at all**:
+
+| Command | Handler | Auth-gated? |
+| --- | --- | --- |
+| `configure` | `FUN_0802c990` | no |
+| `program` | `FUN_0802e720` | no |
+| `firmwarewrite` | `FUN_0802d140` | no |
+| `patch` | `FUN_0802db50` | no |
+| `setbootablestoragedrive` | `FUN_0802f2e8` | no |
+| `power` | `FUN_0802e5e4` | no |
+| `benchmark` | `FUN_0802c59c` | no |
+| `getstorageinfo` | `FUN_0802da18` | no |
+| `getcrc16digest` / `getsha256digest` | `FUN_0802d4f4(1/0)` | no |
+| `erase` | `FUN_0802ce98` | no |
+| **`peek`** | **`FUN_0802e194`** | **no** |
+| **`poke`** | **`FUN_0802e38c`** | **no** |
+| (unrecognised) | warn + `FUN_0804c564(1)` | — |
+
+### peek — arbitrary read
+
+`FUN_0802e194` parses `SizeInBytes` and `address64` from the Firehose XML, then:
+
+```c
+FUN_0803239c("Using address %p", local_440);
+...
+FUN_080064b0(auStack_428, 0x200, "0x%02X ", *(undefined1 *)(local_440 + uVar5));
+```
+
+The only rejections are a string-parse failure (`"Failed to get address"`) and
+`local_440 == 0 || size == 0` (`"Invalid parameters"`). **There is no range, alignment or
+permission check on the address whatsoever** — any non-zero 32-bit value is dereferenced.
+
+### poke — arbitrary write
+
+`FUN_0802e38c` parses `address64`, `SizeInBytes` and `value`, then:
+
+```c
+else if (size <= 8) {
+    FUN_0803239c("Using address %p", puVar8);
+    do {
+        *puVar8 = (char)uVar11;     // write at an arbitrary address
+        puVar8 = puVar8 + 1;
+        uVar11 = uVar11 >> 8;       // little-endian, up to 8 bytes
+    } while (...);
+}
+else {
+    FUN_0803239c("Cannot handle size in bytes greater than %llu", 8);
+}
+```
+
+Same story: the only guards are a parse failure, a null/zero parameter, and the 8-byte size
+cap. **No address validation.**
+
+### What follows from this
+
+If this programmer is accepted by the device's PBL — which is untested — then the chain is:
+
+1. Enter EDL 9008.
+2. Upload this factory-signed programmer (it is signed for exactly this SoC and OEM).
+3. `peek`/`poke` give arbitrary physical memory read/write from the host.
+4. Per the Aleph technique, use that to copy the PBL into writable memory, remap the PBL
+   virtual address onto the copy, and patch its verification.
+5. Boot an attacker-supplied `tz.mbn`, which the patched PBL now accepts.
+
+No unsigned image is ever presented to the unmodified PBL, and no physical fuse is touched.
+
 > [!question]
-> Whether *this* sakura programmer is vulnerable is not established — it may or may not share
-> lineage with the Note 4/Mi 5X/Mi A1/Mi Max 2 programmers that were tested, and the memory
-> map and W^X regions differ per build. But it is now a concrete binary to analyse rather than
-> a research question, and it is the highest-value target in the project.
+> **What is still unverified.** Three things, and only the first needs hardware:
+>
+> 1. Whether this device's PBL actually accepts this programmer, and whether it applies any
+>    post-Sahara check of its own. This is the gating question for the whole approach.
+> 2. Whether any address range is W^X or otherwise protected at the point `poke` writes. The
+>    handlers do not check, but hardware may.
+> 3. Whether the remap approach needs `peek`/`poke` to reach a specific physical window.
+>
+> Items 2 and 3 are answerable only at runtime. Item 1 is answerable with `adb reboot edl` or
+> a test-point entry and one Sahara handshake.
 
 > [!warning]
 > This does not remove the need for [[A read-then-write primitive via a cross-CPU mailbox]]. The

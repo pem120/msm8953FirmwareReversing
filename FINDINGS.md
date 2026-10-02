@@ -432,6 +432,75 @@ No unsigned image is ever presented to the unmodified PBL, and no physical fuse 
 > bug unnecessary for most practical purposes — which is worth weighing before investing more
 > in the bug hunt.
 
+## SBL1 image authentication is a dead end
+
+> [!summary]
+> A full pass over `sbl1.mbn` found **no authentication bypass**, and discovered why:
+> SBL1 does not hold the keys. This closes the "attack the boot chain directly" option and
+> concentrates the remaining effort on the Firehose route.
+
+`sbl1.mbn` (401,492 bytes, ARM32, entry `0x08008010`, code at VA `0x08005000` + file offset
+minus `0x3000`) contains **no RSA, no ECDSA, no SHA implementation, no public-key modulus, no
+certificate chain and no root hash**. The only `SHA1`/`SHA256` strings are diagnostic labels at
+file offsets `0x514e2` and `0x514fa`.
+
+Authentication is delegated through indirect objects and function tables:
+
+```asm
+080220bc: bl   0x08022e48      ; obtain a security object
+080220c0: ldr  r0, [r0, #4]
+080220c2: ldr  r1, [r0, #0x28]  ; vtable entry
+080220c6: blx  r1               ; invoke it
+```
+
+The same shape appears on the per-segment path at `0x0802242e`. The actual crypto lives below
+SBL1 — most consistently, in a PBL-backed secure-boot service with its root trust in ROM or
+fuses.
+
+> [!danger]
+> **This is the important consequence:** there is nothing to patch. The usual "find the
+> signature check and NOP it" approach is unavailable, because the check is not in this image.
+> Rewriting `sbl1.mbn` on disk does not weaken authentication, and there is no embedded key to
+> replace or disable.
+
+### What SBL1 *does* do defensively
+
+It validates extensively before loading, which argues against a malformed-header attack:
+
+- Range registration with addition-overflow checking at `0x0802138c`
+- Per-segment containment and wraparound rejection at `0x08024f6e` (via `MVN`/`CMP`/`BHS`)
+- Interval overlap detection at `0x08021400`
+- 64-bit-style paired arithmetic with `SUBS`/`SBCS`/`BHS` before the copy at `0x080226d4`
+- Authenticate-then-continue structure at `0x08022430`–`0x08022446`, where a null return
+  aborts the load
+
+### The one candidate worth a fuzzing slot
+
+```asm
+08022400: ldrh r0, [r6, #4]      ; 16-bit count
+08022402: ldr  r1, [r6, #0x2c]   ; record size
+08022404: mul  r0, r0, r1        ; 32-bit product
+08022408: uxth r7, r0            ; TRUNCATED to 16 bits
+08022412: bl   0x0802138c        ; span registered for range validation
+```
+
+The **truncated** span is what gets registered as a validated range. If a crafted image can
+make `count × record_size` wrap such that the low 16 bits are small while the real span is
+large, and a later copy uses the untruncated value, that is a classic truncation bug. However
+the copy path independently re-checks with 64-bit paired arithmetic, so this is a fuzzing
+target, not a demonstrated bypass.
+
+Separately, **no explicit small cap** on the segment count was found before the walk begins;
+it is bounded only indirectly by the downstream validators.
+
+> [!question]
+> **Anti-rollback is the softer spot.** At `0x08024f14` SBL1 compares an incoming version
+> against a stored value at `[record + 0x34]` and writes it back if newer. The backing store
+> was not resolved — it is *not* visibly a fuse read. If that record lives in a partition rather
+> than hardware, a downgrade attack becomes plausible: reflash an older but **correctly signed**
+> component. That is not an unsigned-image bypass, but it can surface a component that predates
+> a later fix. Worth resolving before writing SBL1 off entirely.
+
 ## Two independent problems
 
 | | Problem | Status |

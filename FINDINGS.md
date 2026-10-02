@@ -1394,6 +1394,83 @@ already begun tearing down.
 > generically rather than looking at the loader actually sitting in the project directory. The
 > loader was there the whole time.
 
+## Corrected: the CVE count was badly wrong, and so was my patch reasoning
+
+> [!warning]
+> Two corrections, both material. One is to a published figure, the other to reasoning that
+> appears throughout this document.
+
+### The search method missed 151 CVEs
+
+An initial pass searched NVD with `keywordSearch=MSM8953`, which matches **description text
+only**. It does not index the structured affected-versions field where Qualcomm actually lists
+part numbers. A CPE-aware query —
+`cpe:2.3:o:qualcomm:msm8953_firmware:*:*:*:*:*:*:*` — gives the real number:
+
+| Query | Count |
+| --- | --- |
+| `msm8953_firmware` (CPE-aware) | **332** |
+| MSM8953 in description text | 181 |
+| **Missed by the text search** | **151** |
+
+Proof this was a real gap and not a harmless one: **CVE-2020-11289** — the command-handler OOB
+write — is **not** named in its description text. It exists only in the affected-versions field,
+so the original search would have missed the single most relevant CVE in the set.
+
+### Publication date is not a proxy for patch status
+
+> [!caution]
+> **I got this wrong earlier in this document.** I repeatedly reasoned "published after the
+> 2020-05-08 ROM, therefore unpatched". That does not hold. CVE-2020-3619 was **reserved**
+> 2019-12-17 and customers were **notified 2020-03-02** — two months *before* the ROM build —
+> with public publication only in the August 2020 bulletin. A fix ships well before the CVE
+> becomes public.
+
+> [!danger]
+> So the timing argument I used for CVE-2019-2318, CVE-2020-3619, CVE-2019-14040,
+> CVE-2019-10615, CVE-2020-11123 and **CVE-2020-11289** does not hold. Patch status for this
+> build is **unknown for all of them**. Notification dates live only in Qualcomm's portal, not
+> NVD or CVE.org. The reliable route is checking whether the fix is present in `tz.mbn`, which
+> is pure binary analysis.
+
+### The EL3-relevant set is 18, not 7
+
+| CVE | Date | CVSS | Mechanism |
+| --- | --- | --- | --- |
+| CVE-2019-2315 | 2019-11 | 7.8 | API copies fd/local buffer to secure buffer, **parameters from the non-secure environment** |
+| CVE-2019-2318 | 2019-11 | 5.5 | Non-secure kernel causes TrustZone arbitrary memory read |
+| **CVE-2019-2288** | 2019-12 | 7.8 | **OOB write in TZ copying a secure dump structure on an HLOS-provided buffer** |
+| CVE-2019-2321 | 2019-12 | 7.8 | qsee log buffer length validation |
+| CVE-2019-10513 | 2019-12 | 5.5 | SPDM null pointer |
+| CVE-2019-2274 | 2019-12 | 7.8 | Improper access control for RPU write from secure processor |
+| CVE-2019-14040 | 2020-02 | 7.8 | qsee use-after-free -> execution of unknown code |
+| **CVE-2019-14071** | 2020-03 | 7.8 | **Reset handler bypasses access control when the debug path is enabled for RAM dumps** |
+| CVE-2019-10615 | 2020-09 | 7.8 | keymaster 4 integer overflow |
+| CVE-2019-14115 | 2020-09 | 5.5 | secure touch released without check |
+| CVE-2020-3619 | 2020-09 | 7.0 | TOCTOU, non-secure memory touched multiple times |
+| CVE-2020-3643 | 2020-09 | 5.5 | secure display-touch session teardown |
+| CVE-2020-11123 | 2020-11 | 5.5 | gatekeeper throttle bypass |
+| **CVE-2020-11199** | 2021-03 | 5.5 | **HLOS can read the EL3 stack canary** by mapping the imem region |
+| CVE-2020-11221 | 2021-03 | 5.5 | non-secure syscall leaks QTEE diagnostics in clear text |
+| CVE-2020-11246 | 2021-04 | 8.4 | double free on suspend during secure playback |
+| **CVE-2020-11289** | 2021-05 | 7.8 | **OOB write in TZ command handler, lack of command-ID validation** |
+
+> [!success]
+> **CVE-2020-11199 changes how to work.** HLOS can read the **EL3 stack canary** by mapping the
+> imem region. Scored only 5.5 and unremarkable from a CVE list, but it is an **enabler**: it
+> removes the brute-force problem from *any* stack-corruption bug in EL3. From the CVE list
+> alone it is exactly the entry that gets skipped.
+
+> [!danger]
+> **CVE-2019-2288 is the closest to a usable primitive in the set** — an OOB *write* where EL3
+> copies a secure dump structure using an **HLOS-provided buffer and length**. That is
+> lower-EL-supplied data steering a write, which is precisely the direction this whole TZ
+> analysis has been failing to find.
+
+> [!tip]
+> **CVE-2019-14071** belongs to the Firehose thread, not the TZ thread: a reset handler that
+> bypasses access control when a debug path is enabled for RAM dumps.
+
 ## Public vulnerability research
 
 See [[TrustZone vulnerability inventory for MSM8953]].

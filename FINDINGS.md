@@ -1285,6 +1285,58 @@ State is then persisted through `0x8f631a3c` and `0x8f63174c`.
 > exists, so it is refused in at least some states. GPT-update code and strings are present but
 > reachability was not confirmed.
 
+## EDL reconnaissance, first pass
+
+> [!success]
+> The Firehose route is confirmed live again from lk2nd, and one fact now underpins the whole
+> approach: **the loaded programmer sits at `0x08000000` and is fully readable via `peek`.**
+
+Entering EDL from lk2nd requires `fastboot reboot edl` (not `reboot-edl`, which lk2nd rejects).
+The Sahara handshake then reports:
+
+```
+CPU detected:      "MSM8953"
+HWID:              0x000460e100000000 (MSM_ID:0x000460e1, OEM_ID:0x0000, MODEL_ID:0x0000)
+PK_HASH:           0x57158eaf1814d78fd2b3105ece4db18a817a08ac664a5782a925f3ff8403d39a
+Mode detected:     firehose
+```
+
+The `PK_HASH` is the boot ROM's trust anchor — the value a Firehose programmer is checked
+against, and the reason a random loader is rejected. Captured here for the record.
+
+Readings taken while the programmer was live:
+
+| Address | Result |
+| --- | --- |
+| `0x08000000` | `9f7f9eff 0ed4cef0 56bfb6ff 6f374524 ...` — programmer image present |
+| `0x40000000` | `e057803d ffb700f9 ...` — different region, also mapped |
+| `0x10000000` | `00000000 00000000 01000000 00000000 ...` — sparse |
+
+> [!caution]
+> **Correction to my own sweep.** I listed `0x8000000` and `0x08000000` as separate probes and
+> they returned identical data — because `0x8000000` *is* `0x08000000`. That was a duplicate row,
+> not a second finding. And `0x00800000` (8 MiB) returned no response, i.e. unmapped.
+
+> [!warning]
+> **Methodological problem, and it is the reason this is slow.** Each `edl` invocation performs a
+> full Sahara handshake, issues one command, and disconnects — and the device drops back to lk2nd
+> afterwards. The stack sweep did not complete before it dropped. Enumerating memory one address
+> per invocation is the wrong shape for this. The next pass should issue a **single** session
+> containing many reads, via `edl rawxml` with a batch of `<peek>` elements, so one handshake
+> yields the whole survey.
+
+### What Aleph's route needs, and what we have
+
+Aleph's redirect requires, in order: the programmer's load address (**have it: `0x08000000`**),
+a writable+executable page to stage code, and the reset handler's saved return address to
+overwrite. The middle and last are still unknown.
+
+Their published values were for a different programmer: stack at `0x0805D000` on the Nokia 6
+programmer, with the saved LR pointing into the XML-parse return. Those are **Nokia 6 constants,
+not generic** — they must be measured on this programmer. The probes at `0x0805d000` and
+`0x0805e000` in this pass returned nothing, so the stack is not simply there, or the device had
+already begun tearing down.
+
 ## Two independent problems
 
 | | Problem | Status |

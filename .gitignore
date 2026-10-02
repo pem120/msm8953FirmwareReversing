@@ -1,6 +1,15 @@
-# Raw firmware images — OEM copyrighted blobs, keep local only.
+# Raw firmware images.
+# tz.mbn, sbl1.mbn and emmc_appsboot.mbn are the subjects of the analysis but
+# are not tracked. They are byte-identical to the copies in the stock sakura
+# fastboot ROM (d1s-sakura-india-p-stable-symbols-20200508) and can be
+# recovered from it; the hashes are recorded in FINDINGS.md.
 *.mbn
 *.img
+
+# Exception: the Firehose programmer is tracked. The peek/poke finding is
+# about this exact binary, and the notes cite its command table offset,
+# build identity strings and hash, so the analysis is not checkable without it.
+!prog_emmc_firehose_8953_ddr.mbn
 
 # Ghidra project state
 *.gpr

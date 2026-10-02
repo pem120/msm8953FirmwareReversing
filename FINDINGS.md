@@ -12,6 +12,32 @@
 > [!info]
 > Everything below is evidence-backed from the binary unless marked as inference.
 
+## Where this lives
+
+> [!info]
+> **Repository:** <https://github.com/pem120/msm8953FirmwareReversing>
+>
+> `master` carries the full history of this analysis, from the initial `SCR_EL3` finding
+> through the `x20` audit and the Firehose `peek`/`poke` discovery. Everything here is
+> reproducible: each claim cites a file offset or a virtual address in a named image, and the
+> images are either tracked here or recoverable from the stock ROM.
+
+Referenced artifacts, with the binary each address belongs to:
+
+| Address / offset | Binary | Tracked? | Recover from |
+| --- | --- | --- | --- |
+| `0x86500000` entry, `0x86508350` jump table, `0x86501c20` dispatcher | `tz.mbn` | no | stock sakura ROM, SHA-256 `7f218713…` |
+| `0x86500e30` context restore, `0x86501b4c` mailbox consumer | `tz.mbn` | no | same |
+| `0x8650247c` mailbox producer (`ec_21_handler`) | `tz.mbn` | no | same |
+| `0x3c100` Firehose command table, `peek`/`poke` | `prog_emmc_firehose_8953_ddr.mbn` | **yes** | in this repo, SHA-256 `fc3df4df…` |
+
+> [!tip]
+> **Working on this?** The `tz.mbn` addresses are the load-bearing ones. The image is not
+> tracked here, but `sakura-stock/images/tz.mbn` from the stock ROM is byte-identical, so
+> every address in these notes resolves without pulling anything from an untrusted source.
+> Ghidra is already configured for it: 2954 functions, 48 handler bodies created at the
+> exception jump-table targets.
+
 ## Documents
 
 > [!summary]

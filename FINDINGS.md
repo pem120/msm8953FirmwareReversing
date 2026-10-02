@@ -431,9 +431,38 @@ No unsigned image is ever presented to the unmodified PBL, and no physical fuse 
 > This is the concrete counterpart to CVE-2019-2318 and CVE-2020-3619 in this specific
 > `tz.mbn`. Both are read straight out of the binary.
 
-> [!success]
-> **The `x20` model is confirmed.** Not inferred any more — proven by an exact save/restore
-> pair around EL1's register file, with no intervening write on the path that dereferences it.
+> [!info]
+> **Re-verified against the live Ghidra program** (2987 functions, 11 annotations intact after
+> the instance was reopened). All three load-bearing claims check out:
+>
+> ```
+> ; claim 1 - x20 save/restore at [sp,#0xa0]
+> 0x86504438  stp x20, x21, [sp, #0xa0]     ; entry stub spills EL1's x20
+> 0x8650138c  ldp x20, x21, [sp, #0xa0]     ; handler restores it (also at +0x68, +0xdc)
+>
+> ; claim 3 - EC extraction
+> 0x865012d4  mrs  x4, esr_el3
+> 0x865012d8  ubfx x4, x4, #0x1a, #0x6      ; EC = ESR >> 26 & 0x3f
+> ```
+>
+> **Claim 2 is stronger than recorded.** `SCR_EL3 = 0xe00` appears at **five** sites, not three:
+>
+> | VA | Function |
+> | --- | --- |
+> | `0x8650019c` | `FUN_86500180` |
+> | `0x865010f0` | (no function) |
+> | `0x86501288` | `FUN_86501208` |
+> | `0x865013ac` | `el3_exception_common` |
+> | `0x865016f0` | `FUN_86501574` |
+>
+> That strengthens rather than weakens the EL2 conclusion — more of the EL3 code paths are
+> writing a `SCR_EL3` with `HCE` clear.
+
+> [!note]
+> One method caveat worth recording: the exception entry stub at `0x86504400` has **no function
+> boundary** in Ghidra, so operand searches and `/disassemble_function` both miss it entirely.
+> The `stp x20, x21, [sp, #0xa0]` save is only visible via `/disassemble_bytes` on an explicit
+> range. That is easy to mistake for "the save doesn't exist" — it does, and it is load-bearing.
 
 The generic exception entry at `0x86504400` spills the whole lower-EL register file onto EL3's
 stack:

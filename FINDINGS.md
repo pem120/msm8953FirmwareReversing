@@ -501,6 +501,104 @@ it is bounded only indirectly by the downstream validators.
 > component. That is not an unsigned-image bypass, but it can surface a component that predates
 > a later fix. Worth resolving before writing SBL1 off entirely.
 
+## ABOOT fastboot: what unlock actually buys
+
+> [!summary]
+> `emmc_appsboot.mbn` (689,564 bytes, ARM32, entry `0x8f600000`) implements legacy RSA boot
+> verification, **not** AVB, and its unlock path is gated on a token plus the device serial
+> rather than a plain mutable bit.
+
+### The command table
+
+Name/handler pairs alternate from VA `0x8f672190`:
+
+| Command | Handler | | Command | Handler |
+| --- | --- | --- | --- | --- |
+| `flash:` | `0x8f633c70` | | `oem unlock` | `0x8f631c20` |
+| `erase:` | `0x8f634030` | | `oem lock` | `0x8f631bc0` |
+| `continue` | `0x8f631554` | | `oem device-info` | `0x8f62d90c` |
+| `reboot` | `0x8f62da50` | | `oem edl` | `0x8f62df08` |
+| `reboot-bootloader` | `0x8f62da98` | | `set_active` | `0x8f62dd2c` |
+
+> [!tip]
+> **`oem edl` exists at `0x8f62df08`.** That is the clean way into the Firehose path for
+> [[The sakura Firehose programmer is an arbitrary memory primitive]] — no test points, no
+> key-combo guesswork. It also means live test 1 does not need the device to be rebooted by
+> hand.
+
+### Unlocked mode skips boot verification
+
+There is a literal string at VA `0x8f672ff8`:
+
+```
+Device is unlocked! Skipping verification...
+```
+
+Combined with legacy verifier strings — `platform/msm_shared/boot_verifier.c`,
+`OEM_KEYSTORE/VERIFIED_BOOT_SIG`, and `RSA_KEY` / `PUB_KEY` / VB signature errors — this is a
+**pre-AVB signature scheme**, and unlocked mode bypasses it. There are no `vbmeta`, `vbmota` or
+`flashing` literals, so the "flash a `vbmota` with verification disabled" trick that works on
+some devices is **not** indicated here. Unlock would give unsigned `boot.img`, which is the
+lk2nd/pocketboot capability already in hand — not new ground on its own.
+
+### The protected-partition list, and the question it raises
+
+When **locked**, the flash path at `0x8f62d67c` iterates a protected list at VA `0x8f672214`:
+
+```
+aboot, rpm, tz, sbl, sdi, xbl, hyp, pmic, bootloader, devinfo, partition
+```
+
+`tz` is explicitly protected. Note `sbl1` and `devcfg` do **not** appear in the list.
+
+> [!danger]
+> **The key unanswered question:** this check runs *"if locked"*. Whether an **unlocked** device
+> permits `fastboot flash tz` is the single highest-value thing to determine on this image. If
+> it does, the chain becomes: unlock, flash a modified `tz.mbn`, and rely on the unlocked state
+> also relaxing SBL1's verification. That would need no EDL and no PBL exploit at all.
+>
+> This is answerable without risking the device: `fastboot oem device-info` reports the unlock
+> state, and the behaviour can be read from the `0x8f633c70` → `0x8f633870` flash path rather
+> than tested by writing.
+
+### Unlock is not a mutable bit
+
+`oem unlock` at `0x8f631c20` calls the token verifier at `0x8f631c44`:
+
+```asm
+0800...: bl  0x8f60a7f4          ; verify token
+        cbnz r?, <abort>         ; nonzero -> "Token verification failed"
+        bl  0x8f631a3c          ; success -> set unlock state
+```
+
+The failure string is *"Token verification failed"* at VA `0x8f673810`, printed at
+`0x8f631c50`. The verifier `0x8f60a7f4` allocates and zeroes 128-byte buffers, derives and
+compares token material, and calls `0x8f60a1cc` and `0x8f6426c8`. That is substantive
+cryptographic work, not an unconditional state write.
+
+State is then persisted through `0x8f631a3c` and `0x8f63174c`.
+
+> [!danger]
+> **The critical detail: no server call is visible.** The token is verified **entirely locally**,
+> against the device serial number and a secret. That changes the shape of the problem. Unlock
+> is not gated on a Xiaomi cloud entitlement at the moment it executes — it is a local
+> cryptographic check, which means the question becomes whether the secret and the token
+> derivation can be recovered from the image, and whether a valid token can be minted locally.
+>
+> That is a well-trodden area of Android device research, and it is the cheapest remaining
+> route to an unlocked device. It does not by itself grant EL3, but it feeds the
+> "does unlocked permit `flash tz`" question above, which is the one that would.
+
+> [!info]
+> Related globals: a struct at VA `0x8f68b920` carries a "tested" flag at `+16`
+> (`0x8f633400`) and a "critical" flag at `+24` (`0x8f633428`). Whether the "critical" flag
+> gates the protected list was not resolved and is worth checking.
+
+> [!caution]
+> `fastboot boot` is present but gated — the string *"fastboot boot command is not available"*
+> exists, so it is refused in at least some states. GPT-update code and strings are present but
+> reachability was not confirmed.
+
 ## Two independent problems
 
 | | Problem | Status |

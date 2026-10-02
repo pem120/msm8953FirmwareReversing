@@ -249,23 +249,87 @@ So this is the normal exception-return path.
 > The bug hunt target is anything that lets EL1 influence that save block, or reach
 > `FUN_86500e30` with attacker data.
 
+## Target confirmed: sakura (Redmi 6 Pro)
+
+The firmware being analysed is now positively identified. `sakura-stock/images` is a stock
+Xiaomi fastboot ROM, build `d1s-sakura-india-p-stable-symbols-20200508`, and all three images
+hash **byte-identical** to the ones in this repo:
+
+| Image | Size | SHA-256 (first 16) | Match |
+| --- | --- | --- | --- |
+| `tz.mbn` | 1,531,776 | `7f21871366071836` | identical |
+| `sbl1.mbn` | 401,492 | `e463227e8c345e47` | identical |
+| `emmc_appsboot.mbn` | 689,564 | `fc57d7097087e0c1` | identical |
+
+> [!success]
+> This validates the whole static analysis: the `tz.mbn` under Ghidra is genuine, unmodified,
+> stock sakura firmware, not a dump from some other device.
+
+## The Firehose programmer exposes peek and poke
+
+> [!danger]
+> **This overturns the earlier conclusion that delivery was blocked.**
+
+`sakura-stock/images/prog_emmc_firehose_8953_ddr.mbn` (399,552 bytes, ELF32 ARM, entry
+`0x8009330`) is a device-specific, factory-signed programmer for this exact handset. Its
+Firehose command table sits at file offset `0x3c100` and contains:
+
+```
+configure, program, firmwarewrite, patch, setbootablestoragedrive, emmc, power,
+benchmark, read, getstorageinfo, getcrc16digest, getsha256digest, erase, peek, poke
+```
+
+`peek` and `poke` are **both recognised commands**. In a Firehose programmer these are
+arbitrary physical memory read and write, driven from the host over the XML interface, with no
+fuse or signing check behind them. The dispatcher has a `WARNING: Ignoring unreco[gnised
+command]` fallback, so the table is the full accepted set.
+
+Build identity strings confirm the lineage: `OEM_IMAGE_VERSION_STRING=c3-miui-ota-bd116.bj`,
+`OEM_IMAGE_UUID_STRING=Q_SENTINEL_{7702A6B6-2304-4FA9-96CB-2485B8B12FA8}_20200508_1626`, build
+id `8953A-JAADANAZA-40000000`, with DDR init paths for `pm8953_pmi8950`, `pm8953_pmi8940` and
+`pm8953_pmi8937`.
+
+### Why this matters
+
+Public research by Aleph Security on Qualcomm EDL programmers covers **this exact SoC
+generation**: they obtained and reverse-engineered PBLs for MSM8917, MSM8937 and MSM8953, and
+tested Xiaomi MSM8953 programmers from the Note 4, Mi 5X, Mi A1 and Mi Max 2. Their results
+differed by device — on MSM8937 (Nokia 6) they demonstrated a **complete secure-boot bypass**,
+and on MSM8953 they demonstrated programmer-level access and a working memory-execution path.
+
+The technique is not an unauthenticated Sahara flaw. It is a **post-authentication compromise
+of an accepted programmer**: obtain privileged execution inside the Firehose image, then remap
+the PBL's page tables, copy the PBL into writable memory, remap the PBL virtual address onto
+the clone, patch the verification, and continue booting. No physical ROM is touched and no
+unsigned image is ever presented to the real PBL.
+
+> [!question]
+> Whether *this* sakura programmer is vulnerable is not established — it may or may not share
+> lineage with the Note 4/Mi 5X/Mi A1/Mi Max 2 programmers that were tested, and the memory
+> map and W^X regions differ per build. But it is now a concrete binary to analyse rather than
+> a research question, and it is the highest-value target in the project.
+
+> [!warning]
+> This does not remove the need for [[A read-then-write primitive via a cross-CPU mailbox]]. The
+> two are independent: a TZ bug gives code execution *inside* the secure world, while the
+> Firehose angle gives host-driven memory access *outside* it. A Firehose win would make the TZ
+> bug unnecessary for most practical purposes — which is worth weighing before investing more
+> in the bug hunt.
+
 ## Two independent problems
 
 | | Problem | Status |
 | --- | --- | --- |
-| A | Memory-corruption bug in `tz.mbn` → EL3 code execution | In progress. One lead killed. Structural weakness identified. |
-| B | Get that code to survive boot past PBL/SBL | **Blocked**, and likely the harder one |
+| A | Memory-corruption bug in `tz.mbn` → EL3 code execution | In progress. Read primitive and a mailbox read-then-write found; gate unproven. |
+| B | Get that code to survive boot past PBL/SBL | **No longer blocked.** Device-specific signed Firehose programmer is present and exposes `peek`/`poke`. |
 
-Per [[Flash and delivery paths for MSM8953]]: EDL + Firehose (`bkerler/edl`; public loaders exist for
-`daisy` and `rosy`) can put arbitrary bytes on eMMC. But Firehose does **not** bypass PBL/SBL
-image authentication, and `lk2nd` cannot help because it runs *after* SBL1. No publicly
-documented route exists for booting an unsigned modified `tz`/`sbl1`.
-
-> [!warning]
-> **Solving A does not get EL3 unless B also falls.** Recommend establishing a working EDL
-> read/write round-trip and confirming exactly which partitions the stock bootloader will
-> accept before investing further in bug hunting — it determines whether the project is
-> viable.
+> [!info]
+> **Correction.** I previously recorded Problem B as blocked, on the grounds that Firehose can
+> write eMMC but not bypass PBL/SLB authentication, and that no public route existed. That was
+> half right: Firehose alone indeed does not bypass verification, but I had not checked whether
+> *this* programmer exposes memory primitives, and I was researching Xiaomi codenames
+> generically rather than looking at the loader actually sitting in the project directory. The
+> loader was there the whole time.
 
 ## Public vulnerability research
 

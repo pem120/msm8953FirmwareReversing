@@ -474,6 +474,25 @@ itself. Therefore `x20` at the point of use is EL1's `x20`, fully under lower-EL
 > the caller chooses the pointer, TZ dereferences it unvalidated to `0x198`, and the buffer is
 > both read and written within a single dispatch.
 
+> [!warning]
+> **Correction to an earlier claim in this document.** The `[x20,#0x198]` and `[x20,#0x100]`
+> accesses are **not** EL1-controlled. A third pass established that in the two functions using
+> them, `x20` is rebuilt from TZ constants *before* the access:
+>
+> ```
+> 0x86500cdc  mov  x20, #0 ... add x20, x20, #0x13000   ; x20 = TZ static base
+> 0x86500ce8  ldr  w1, [x20, #0x198]                    ; a TZ global, not a caller pointer
+>
+> 0x865019e4  adrp x20, 0x86514000
+> 0x865019e8  add  x20, x20, #0                         ; x20 = TZ global base
+> ```
+>
+> My earlier "no bounds check on `x20`, dereferenced to 0x198" overstated it: those two
+> particular offsets are register reuse, not the caller's pointer. The defect is confined to the
+> SMC-handler region where `x20` genuinely is the saved EL1 register. The list of 11 offsets is
+> accurate as a list of `[x20+N]` accesses, but only those on the restored-frame path are
+> attacker-influenced. The `0x02000502` allowlist bug below is unaffected and stands on its own.
+
 ### x20 is dereferenced at 11 offsets, up to 408 bytes, and never validated
 
 Every `[x20 + N]` access in the image was enumerated. The offsets touched are:
@@ -591,7 +610,74 @@ TOCTOU shape does not apply to this code.**
 > flows *into* the stored word, or a TZ-owned object whose contents the caller can influence.
 > That is now a well-defined search rather than an open question.
 
-### The same buffer is read and written within a single dispatch
+> [!danger]
+> **A real bug, verified: the `0x02000502` allowlist validates 32 bits and writes 64.** This is
+> the first confirmed memory-safety defect in this firmware, and it is the write primitive.
+
+### The type confusion, instruction by instruction
+
+The FID `0x02000502` path loads a **full 64-bit pointer** and passes it to a validator that only
+looks at the low half:
+
+```asm
+0x86501e88  ldr  x0, [x20, #0x10]     ; 64-bit pointer from EL1
+0x86501e8c  ldr  w1, [x20, #0x18]     ; 32-bit value to write
+0x86501e90  bl   0x86503304
+```
+
+Inside the validator, the comparison is 32-bit:
+
+```asm
+0x86503360  mov   w8, wzr
+0x86503364  add   x9, x9, #0x520        ; table at 0x86508520
+0x86503368  ldr   w11, [x9]             ; 32-bit allowlist entry
+0x8650336c  cmp   w11, w0               ; only the low 32 bits of the pointer
+0x86503370  beq   0x8650338c            ; -> returns 1 (allowed)
+0x8650337c  cmp   w8, #0x11             ; 18 entries
+0x86503380  bls   0x86503368
+```
+
+and the store uses the **full pointer**:
+
+```asm
+0x86503314  mov  x20, x0                ; 64-bit preserved
+0x8650331c  bl   0x8650335c             ; 32-bit check
+0x86503340  str  w19, [x20]             ; 64-bit write
+```
+
+**So the check is `low32(A2) == allowlisted`, while the write is `*(uint32_t *)A2 = low32(A3)`.**
+A pointer of `0x000000010b1880b0` compares equal to the allowlist entry `0x0b1880b0` yet refers
+to an entirely different address. The allowlist is not type-safe as a 64-bit pointer validation.
+
+> [!caution]
+> **What is proven and what is not.** Proven from the instructions: the validation truncates to
+> 32 bits and the write uses the full pointer. **Not** proven: that any particular high-half
+> alias is mapped and writable under the target's full MMU configuration. That is
+> environment-dependent and is the remaining question — but this is a genuine defect in the
+> check itself, not a speculative one.
+
+> [!tip]
+> The 18 allowlisted values (`0x0b1880b0`, `0x0b1980b8`, `0x0193d100`, `0x01c46000`, …) are low
+> physical addresses in what looks like the RPM/secure IPC window. On a 32-bit-addressable
+> interpretation they are the "correct" targets; the defect is that nothing pins the high half.
+
+### Other paths in the same dispatch
+
+Worth recording alongside it, in descending value:
+
+- **Vendor family `0x340105ff`–`0x34010603`** copies caller words `A0..A4` into TZ-owned objects
+  at offsets 0, 8, 0x10, 0x18, 0x20. Direct EL1→TZ state injection. The table index *is*
+  properly bounded (`cmp w13, #4; b.hi default`, then `ldr x15, [x15, x13, LSL #3]; br x15`), so
+  there is no arbitrary function pointer here.
+- **`0x04000020`** passes the caller frame to a helper that copies `A0`/`A1` into a TZ object.
+  State injection, but the destination is TZ-selected rather than caller-selected.
+- **`[x20,#0x30]`** selects between two fixed internal paths (write `-13` and exit, or the
+  normal update), gated on a TZ global byte at `0x8650d0a8` being 1. An EL1-influenced branch,
+  but not a hijack.
+- **`0x02000501`** reads 32 bits *from* the caller pointer under the same 32-bit allowlist — a
+  read primitive with the same truncation weakness.
+
+## The same buffer is read and written within a single dispatch
 
 In the SMC ID-dispatch window (`0x86501c94`–`0x86502050`) the caller's buffer is both sourced
 and written, with values flowing between offsets:

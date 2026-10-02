@@ -541,25 +541,79 @@ Combined with legacy verifier strings — `platform/msm_shared/boot_verifier.c`,
 some devices is **not** indicated here. Unlock would give unsigned `boot.img`, which is the
 lk2nd/pocketboot capability already in hand — not new ground on its own.
 
-### The protected-partition list, and the question it raises
-
-When **locked**, the flash path at `0x8f62d67c` iterates a protected list at VA `0x8f672214`:
-
-```
-aboot, rpm, tz, sbl, sdi, xbl, hyp, pmic, bootloader, devinfo, partition
-```
-
-`tz` is explicitly protected. Note `sbl1` and `devcfg` do **not** appear in the list.
+### The protected-partition list, and the answer
 
 > [!danger]
-> **The key unanswered question:** this check runs *"if locked"*. Whether an **unlocked** device
-> permits `fastboot flash tz` is the single highest-value thing to determine on this image. If
-> it does, the chain becomes: unlock, flash a modified `tz.mbn`, and rely on the unlocked state
-> also relaxing SBL1's verification. That would need no EDL and no PBL exploit at all.
+> **Settled: unlocking does NOT permit flashing `tz`.** Read out of the code, no device
+> required.
+
+`FUN_8f62d67c` is the protected-name check. Its real loop bound was mis-rendered by the
+decompiler; the instructions give it away:
+
+```asm
+8f62d69c  ldr  r4, [0x8f62d6e8]     ; table base
+8f62d6a0  add  r6, r4, #0x30        ; end = base + 48 = 12 entries
+8f62d6a8  ldr  r1, [r4, #4]!        ; load, post-increment
+8f62d6ac  bl   0x8f642364           ; strcmp(name, entry)
+8f62d6b4  beq  <match>              ; return 1 on match
+8f62d6b8  cmp  r4, r6
+8f62d6bc  bne  0x8f62d6a4
+```
+
+> [!warning]
+> **Correction.** The twelve protected names, read from the table at VA `0x8f672218`, are:
 >
-> This is answerable without risking the device: `fastboot oem device-info` reports the unlock
-> state, and the behaviour can be read from the `0x8f633c70` → `0x8f633870` flash path rather
-> than tested by writing.
+> ```
+> aboot, rpm, tz, sbl, sdi, sbl1, xbl, hyp, pmic, bootloader, devinfo, partition
+> ```
+>
+> `sbl1` **is** present (entry 6, VA `0x8f66a4dc`). An earlier pass reported it missing and that
+> claim is wrong — the table starts one slot later than assumed, which is why the first entry
+> resolved to a code address. Every boot-chain partition is protected.
+
+### Why unlock does not lift the restriction
+
+The flash path in `FUN_8f633310` reads two separate fields from a struct at `0x8f68b920`:
+
+```asm
+8f633400  ldr  r3, [r6,#0x10]     ; unlock flag
+8f633404  cmp  r3, #0x0
+8f633408  bne  0x8f63341c         ; unlocked -> skip the first protected check
+8f63340c  bl   0x8f62d67c         ; locked  -> check the list
+8f633418  beq  0x8f633754         ; not protected -> allow
+...
+8f63341c  bl   0x8f62ae48
+8f633420  cmp  r0, #0x1
+8f633424  ble  0x8f633434         ; refuse
+8f633428  ldr  r3, [r6,#0x18]     ; the OTHER flag: "critical"
+8f63342c  cmp  r3, #0x0
+8f633430  beq  0x8f63361c
+...
+8f63361c  bl   0x8f62d67c         ; protected list checked AGAIN
+8f63362c  movw r0, 0x400c         ; "Critical partition flashing is not allowed"
+```
+
+The decisive point is what `oem unlock` actually writes. At `0x8f631c88`:
+
+```asm
+8f631c80  mov  r0, #0x0           ; selector 0
+8f631c84  mov  r1, #0x1           ; value 1
+8f631c88  bl   0x8f631a3c
+```
+
+`FUN_8f631a3c` dispatches on the selector: `0` writes the field at `+0x10`, `1` writes the field
+at `+0x18`. `oem lock` calls it as `(0, 0)`. **Neither ever writes `+0x18`.**
+
+So the unlocked path skips the *first* protected check, but the `critical` flag at `+0x18`
+remains zero, control reaches `0x8f63361c`, and the list is consulted again — where `tz` is
+found and refused with *"Critical partition flashing is not allowed"* (VA `0x8f67400c`).
+
+> [!success]
+> **Consequence:** the cheap route is closed. Unlocking still skips boot-image verification
+> (unsigned `boot.img`, which lk2nd already does) but buys nothing on `tz`, `sbl1` or `aboot`.
+> Reaching EL3 still requires either the Firehose arbitrary memory primitive or a genuine
+> secure-boot bypass. That is a genuinely useful negative — it was the cheapest remaining path,
+> and it is not there.
 
 ### Unlock is not a mutable bit
 

@@ -790,6 +790,57 @@ bytes land there.
 > stride across four regions is characteristic of a hardware register block or IPC doorbell array,
 > and knowing what they address would say what a legitimate `poke` there was for.
 
+### The `0xb` caller-pointer copy is a read, not a write
+
+> [!caution]
+> Flagged by a subagent as an "arbitrary-pointer write". Checked directly: **it is a read**, and
+> it is length-bounded. Recording the disproof so nobody chases it again.
+
+Case `0xb` at `0x865021c4` takes a caller pointer and passes it to `FUN_86505000`:
+
+```asm
+0x865021c4  ldr  x25, [x20, #8]        ; caller-controlled pointer
+0x865021e0  bl   0x86502c2c            ; per-CPU block, selector 3
+0x865021f0  ldr  x8, [x26, #0x200]
+0x865021fc  bl   0x865057c0            ; gate
+0x86502200  and  w11, w0, #0xff
+0x86502204  cbz  w11, 0x86502714       ; skip if the gate fails
+0x86502208  ldr  x2, [sp, #0x8]        ; TZ block, selector 2
+0x8650220c  mov  w1, #0x210            ; length
+0x86502214  mov  x0, x25               ; source = caller pointer
+0x86502218  bl   0x86505000
+```
+
+`FUN_86505000` is a bounded copy:
+
+```c
+ulong FUN_86505000(void *param_1, ulong param_2, void *param_3, ulong param_4)
+{
+    if (param_4 < param_2) param_2 = param_4;   // clamp to destination size
+    FUN_86507268(param_1, param_3, param_2);    // memcpy(TZ_block, caller_ptr, 0x210)
+    return param_2;
+}
+```
+
+> [!info]
+> Direction matters: `FUN_86507268(param_1, param_3, param_2)` is `memcpy(dst=param_3, src=param_1,
+> n=param_2)`, so this is `memcpy(TZ_block, caller_ptr, 0x210)` — **data flows from EL1 into TZ
+> memory**, which is state injection of the kind already catalogued, not an arbitrary write. The
+> length is fixed `0x210` and additionally clamped against `param_4`, so there is no
+> length-controlled overflow. Reading `0x210` bytes from a caller pointer is no more powerful
+> than the four injection paths already recorded.
+
+The gate `FUN_865057c0` is a per-CPU ownership check, not a memory-safety check:
+
+```asm
+0x865057d0  bl   0x86508220          ; current CPU id
+0x865057d4  cbz  x19, 0x865057ec      ; null -> return 0
+0x865057d8  ldr  x8, [x19]           ; a count
+0x865057dc  add  w9, w0, #0x1        ; cpu + 1
+0x865057e0  cmp  w9, w8
+0x865057e4  cset w0, eq              ; 1 if cpu+1 == *ptr
+```
+
 ### Where the EL1-injected state actually ends up
 
 > [!summary]

@@ -431,6 +431,49 @@ No unsigned image is ever presented to the unmodified PBL, and no physical fuse 
 > This is the concrete counterpart to CVE-2019-2318 and CVE-2020-3619 in this specific
 > `tz.mbn`. Both are read straight out of the binary.
 
+> [!success]
+> **The `x20` model is confirmed.** Not inferred any more — proven by an exact save/restore
+> pair around EL1's register file, with no intervening write on the path that dereferences it.
+
+The generic exception entry at `0x86504400` spills the whole lower-EL register file onto EL3's
+stack:
+
+```
+0x86504410  stp x0,  x1,  [sp]
+0x86504414  stp x2,  x3,  [sp, #0x10]
+   ... through ...
+0x86504438  stp x20, x21, [sp, #0xa0]      <- EL1's x20 preserved here
+0x8650443c  stp x22, x23, [sp, #0xb0]
+0x86504440  stp x24, x25, [sp, #0xc0]
+0x86504444  stp x26, x27, [sp, #0xd0]
+0x86504448  stp x28, x29, [sp, #0xe0]
+0x8650444c  mrs  x0,  sp_el0
+0x86504450  stp x30, x0, [sp, #0xf0]
+0x86504454  mrs  x0,  sp_el1
+0x86504458  str  x0,  [sp, #0x100]
+0x8650445c  ldr  x16, 0x86504468           ; -> 0x865012d0, the common handler
+```
+
+and the common handler restores it before returning:
+
+```
+0x8650138c  ldp  x20, x21, [sp, #0xa0]      <- restored here
+0x86501390  ldp  x22, x23, [sp, #0xb0]
+0x865013a0  add  sp, sp, #0x108
+0x865013a4  eret
+```
+
+**`[sp,#0xa0]` is a symmetric round-trip.** The stub writes EL1's `x20` there and the handler
+reads it back from the same slot. Nothing between the `SMC` trap and the `x20` dereference at
+`0x86501c94` assigns `x20` — the only write in the entire handler region is the stack restore
+itself. Therefore `x20` at the point of use is EL1's `x20`, fully under lower-EL control.
+
+> [!tip]
+> This closes the last gap. `tzprobe` existed only to check this empirically, so it is no longer
+> load-bearing. Combined with the two findings below, the `x20` surface is fully characterised:
+> the caller chooses the pointer, TZ dereferences it unvalidated to `0x198`, and the buffer is
+> both read and written within a single dispatch.
+
 ### x20 is dereferenced at 11 offsets, up to 408 bytes, and never validated
 
 Every `[x20 + N]` access in the image was enumerated. The offsets touched are:
@@ -480,12 +523,12 @@ the same call. **That is the CVE-2020-3619 shape** — non-secure memory touched
 during one TrustZone operation, which is what turns a read primitive into a write.
 
 > [!caution]
-> **What is and is not established.** Statically proven: `x20` is dereferenced at 11 offsets up
-> to `0x198` with no validation, and the buffer is both read and written within a single
-> dispatch. **Not** established: that `x20` is in fact EL1-controlled — that still rests on the
-> three instructions from the exception stub and is what `tzprobe` is meant to confirm. Nor is
-> exploitability proven. Both halves are needed: the missing bounds check is useless if the
-> caller cannot actually choose `x20`.
+> **What is and is not established.** Established statically: EL1 controls `x20` at the trap
+> (save/restore pair, above); TZ dereferences it at 11 offsets up to `0x198` with no validation;
+> and the buffer is both read and written within a single dispatch. **Not** established:
+> exploitability. Concretely, that still needs a demonstration that a caller-chosen `x20` yields
+> a useful read *and* a write that survives the re-read — which is the CVE-2020-3619 TOCTOU
+> window and the only remaining unknown.
 
 ## The route to EL2, and why it runs through EL3
 

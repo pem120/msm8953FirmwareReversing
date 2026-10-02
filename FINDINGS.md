@@ -425,6 +425,55 @@ No unsigned image is ever presented to the unmodified PBL, and no physical fuse 
 > Items 2 and 3 are answerable only at runtime. Item 1 is answerable with `adb reboot edl` or
 > a test-point entry and one Sahara handshake.
 
+## The route to EL2, and why it runs through EL3
+
+> [!danger]
+> **EL2 is downstream of EL3 on this device.** There is no shortcut. The chain is fixed:
+
+```
+1. Arbitrary physical memory R/W   <- HAVE IT: Firehose peek/poke, verified live
+2. Code execution in the programmer
+3. Remap / patch the PBL
+4. Boot a modified tz.mbn          <- EL3 achieved
+5. Patch SCR_EL3 so HCE = 1
+6. HVC now routes to EL2           <- EL2, finally
+```
+
+Steps 5 and 6 are the actual EL2 enablement, and they are trivial *once* step 4 lands —
+`SCR_EL3` is written as a constant in three places (`0x865001a0`, `0x865010f4`,
+`0x8650128c`) and the handler explicitly clears `HCE` before every `ERET`, so both would need
+patching in a modified `tz.mbn`. All the difficulty is upstream of that.
+
+> [!warning]
+> **Honest expectation-setting.** Aleph Security completed this chain on MSM8937 (Nokia 6). On
+> MSM8953 they demonstrated code execution and PBL extraction on `mido` but **did not complete
+> the secure-boot bypass** — that is the published high-water mark for this SoC. On MSM8917 their
+> PBL route failed at flash initialisation. So this is a genuine research effort, not a
+> known-good recipe, and it may not land on sakura.
+
+### What blocks each step right now
+
+| Step | Blocker | Needs |
+| --- | --- | --- |
+| 2 | Programmer's EL and page-table layout unknown; WX pages not located | Device in EDL, Firehose memory analysis |
+| 3 | PBL page set and MMU init behaviour unknown | Steps 1-2 done |
+| 4 | Whether a patched PBL is enough, or SBL1 also resists | Step 3 done |
+| 5-6 | — | Nothing, once EL3 exists |
+
+### Ruled out as routes to EL2
+
+- **`/dev/mem`** — `CONFIG_STRICT_DEVMEM=y`; reads of the secure region EFAULT.
+- **In-kernel inspection** — the secure world is not a System RAM region, and `/proc/iomem` is
+  redacted by `kptr_restrict`.
+- **SMC from a kernel module** — attempted twice; both attempts faulted at
+  `0xffffffffffffffff` (EC `0x25` DABT, FSC `0x06` level-2 translation fault). Cause not yet
+  established; the first version's fault was self-inflicted (wrote `SP_EL0` to a kernel
+  `vzalloc` address), the second did not touch `SP_EL0` and faulted identically.
+- **Replacing `tz.mbn` on flash** — write gate is open (`devinfo+0x18 == 1`) but PBL/SBL
+  signature verification still rejects the image at boot.
+- **Bootloader unlock** — locally token-gated, and unlock does not lift the critical-partition
+  restriction.
+
 ## Live result: the gate is open
 
 > [!success]

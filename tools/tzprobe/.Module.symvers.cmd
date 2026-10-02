@@ -1,0 +1,1 @@
+savedcmd_Module.symvers :=  /home/ishu/Projects/Android/msm8953/linux/scripts/mod/modpost -M          -o Module.symvers -n -T modules.order -i /home/ishu/Projects/Android/msm8953/linux/Module.symvers -e 

@@ -737,6 +737,25 @@ The per-CPU allocator `FUN_86502c2c` indexes a table at `DAT_8650d0b0 / 0xd4d0 /
 | `smc_copy_caller_0x48` (`0x86501a64`) | **index 2** | fixed 0x48 bytes at offsets `0x00..0x40`, plus `+0x48` → `ctx[0x38]` | Read sink only |
 | vendor family `0x340105ff`–`0x34010603` | index 1 / index 3 | five words into offsets `0x00..0x20` | No readers found |
 | `0x04000020` → `FUN_86502e9c` | **index 3** | `caller[0]`, `caller[1]`, `caller+0x48` → `idx3+0x1c0`, constants at `+0x1d0`/`+0x208` | Data only |
+| **separate path at `0x865024d8`** | object in `x25` | `caller[0x40]` → `obj+0x1c0` | Data only — see below |
+
+> [!warning]
+> **A fourth injection path exists, and I missed it in the commit message.** Verified directly:
+> ```
+> 0x865024d8  ldr  x12, [x20, #0x40]   ; caller-controlled 64-bit value
+> 0x865024dc  cbz  x12, 0x865024ec     ; only a null check
+> 0x865024e4  str  x12, [x25, #0x1c0]   ; -> object+0x1c0
+> ```
+> So the vendor family is not strictly bounded to offsets `0x00..0x20` as I wrote. The only
+> validation is a non-zero test. This does **not** change the conclusion below, because `+0x1c0`
+> is still nowhere near `0x17`–`0x1a`, but the earlier "offsets 0x00–0x20" summary was wrong.
+
+> [!caution]
+> **Do not conflate `+0x1c0` with `+0x200`.** Handlers at `0x8650208c` / `0x865020d0` load
+> `[x26,#0x200]` and pass it to `FUN_865057c0`. That is a *different* object field reached through
+> a different path. Whether the object written at `+0x1c0` is the same object later read at
+> `+0x200` — i.e. whether an object transition connects them — was not traced, and is the
+> natural next question.
 
 > [!danger]
 > **The sink is real but out of reach of these injections.** `tz_ctx_restore_el1` writes

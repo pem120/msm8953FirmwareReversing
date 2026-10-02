@@ -1288,8 +1288,8 @@ State is then persisted through `0x8f631a3c` and `0x8f63174c`.
 ## EDL reconnaissance, first pass
 
 > [!success]
-> The Firehose route is confirmed live again from lk2nd, and one fact now underpins the whole
-> approach: **the loaded programmer sits at `0x08000000` and is fully readable via `peek`.**
+> The Firehose route is confirmed live again from lk2nd. A dedicated static pass then
+> established the programmer's real layout — and corrected two of my assumptions.
 
 Entering EDL from lk2nd requires `fastboot reboot edl` (not `reboot-edl`, which lk2nd rejects).
 The Sahara handshake then reports:
@@ -1317,13 +1317,62 @@ Readings taken while the programmer was live:
 > they returned identical data — because `0x8000000` *is* `0x08000000`. That was a duplicate row,
 > not a second finding. And `0x00800000` (8 MiB) returned no response, i.e. unmapped.
 
+> [!danger]
+> **Correction: `0x08000000` is not the programmer.** The bytes read there
+> (`9f7f9eff 0ed4cef0 ...`) match neither the ELF header (`7f454c46`), nor the programmer's
+> code at `0x08006000`, nor the reset handler, and they do not decode as plausible ARM or Thumb.
+> Something else is resident there — PBL/Sahara state, a loader buffer, or stale RAM. My earlier
+> "programmer is live and readable at 0x08000000" was inferred merely from *something* being
+> readable, which was too weak.
+
+> [!success]
+> **The real layout, which is better news than I had.** The ELF entry `0x8009330` is numerically
+> identical to `0x08009330` — an omitted leading zero, not a different address. It sits in the
+> R+E segment at `0x08006000` at file offset
+> `0x3000 + (0x08009330 - 0x08006000) = 0x6330`. So the programmer executes at physical
+> **`0x08009330`** with code at **`0x08006000`** — both readable.
+
+### Initial stacks, recovered from the literal pool
+
+The reset handler loads literals from `0x08009520`, which is file-backed at offset `0x6520`:
+
+| VA | Value | Use |
+| --- | --- | --- |
+| `0x08009520` | `0x08006000` | initial SVC SP, **and** the value written to `c12` |
+| `0x08009524` | `0x08059000` | IRQ mode SP |
+| `0x08009528` | `0x0805c000` | ABT mode SP |
+| `0x0800952c` | `0x0805f000` | SYS mode SP |
+
+> [!tip]
+> **`c12` is VBAR, not SCTLR.** I had assumed the first CP15 write configured the MMU; it
+> installs the exception-vector base. MMU setup happens later, at `0x08008938`:
+> `TTBR1=0`, `TTBR0=<arg>`, `CONTEXTIDR=0`, `DACR=1`, then `SCTLR.M` is set.
+
+### The programmer is ARMv7, not ARMv8 — and that fixes the Aleph mapping
+
 > [!warning]
-> **Methodological problem, and it is the reason this is slow.** Each `edl` invocation performs a
-> full Sahara handshake, issues one command, and disconnects — and the device drops back to lk2nd
-> afterwards. The stack sweep did not complete before it dropped. Enumerating memory one address
-> per invocation is the wrong shape for this. The next pass should issue a **single** session
-> containing many reads, via `edl rawxml` with a batch of `<peek>` elements, so one handshake
-> yields the whole survey.
+> The image uses **ARMv7 short-descriptor** MMU (`mrc/mcr p15`, ops `c1`/`c2`/`c3`/`c12`).
+> There is no `TTBR0_EL1`/`MAIR_EL1`/`TCR` and no stage-2 setup, because those are ARMv8
+> constructs that do not apply here. Aleph's `APX=0, AP=3, NX=0` test is an **ARMv7
+> short-descriptor** condition, so it is directly the right test for this programmer — my
+> framing of it as ARMv8 was wrong.
+
+Program headers, which do **not** settle runtime permissions:
+
+```
+0x00224000  R E
+0x00226000  RW
+0x08006000  R E      <- main code
+0x08056000  RW, zero-filled
+0x0805f000  RW
+0x80000000  RW, zero-filled
+0x86700000  RW, zero-filled
+```
+
+No segment is flagged `RWX`, and `0x08006000` is explicitly R+E only. But **ELF flags do not
+prove runtime AP/APX/XN** — those live in page tables constructed at runtime, and the
+zero-file-size RW regions are initialised by code not recoverable statically. So RWX is neither
+proven nor excluded, which is exactly what a runtime `peek` of the page tables would settle.
 
 ### What Aleph's route needs, and what we have
 

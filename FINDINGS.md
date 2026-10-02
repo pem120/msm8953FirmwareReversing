@@ -757,9 +757,45 @@ this is the secure-token verification path, the same one `oem unlock` uses.
 >    the **stock** `tz.mbn` back to the `tz` partition — writing identical content, semantically
 >    a no-op like the poke test. A refusal proves the restriction is live; success means the
 >    write path is open.
-> 2. The `devinfo` build string says **`DAISY2.0`**, and `daisy` is the Redmi 6A codename, not
->    `sakura` (Redmi 6 Pro). Both are MSM8953, and the programmer is accepted either way, but the
->    mismatch should be resolved before assuming the analysis matches the handset.
+> 2. The `devinfo` build string says **`DAISY2.0`**, and `daisy` is the Redmi 6A / Mi A2 Lite
+>    — an Android Go device. So the connected handset is a **daisy**, not a `sakura`
+>    (Redmi 6 Pro). Both are MSM8953 on the same platform, which is why the `sakura` Firehose
+>    programmer is accepted: the loader's authentication is platform-level, not per-handset.
+>    This is a clarification, not a problem, but it is recorded so `DAISY2.0` is not later read
+>    as a mismatch.
+
+## Device identity: daisy, not sakura
+
+> [!info]
+> The target handset is a **daisy** (Redmi 6A / Mi A2 Lite, Android Go). The stock images used
+> throughout this analysis came from a `sakura` (Redmi 6 Pro) fastboot ROM, `d1s-sakura-india-p-stable-symbols-20200508`.
+
+That the sakura programmer is accepted on a daisy is itself a finding: Firehose programmer
+authentication on this family is **platform-level**, not per-handset, so an image from one
+device in the family is accepted by another.
+
+Sakura baseline hashes, for comparison against daisy/A2 stock:
+
+| File | Size | SHA-256 (first 32 hex) |
+| --- | --- | --- |
+| `tz.mbn` | 1,531,776 | `7f21871366071836a2fcbda0969621c6` |
+| `sbl1.mbn` | 401,492 | `e463227e8c345e47f4f0a64aac75a081` |
+| `emmc_appsboot.mbn` | 689,564 | `fc57d7097087e0c12ef83117f2e75313` |
+| `rpm.mbn` | 174,468 | `4f1a0bc6616f9e16b22a5dddcaf721ad` |
+| `devcfg.mbn` | 40,028 | `2fe876124f8912b51203eb522d7b6b17` |
+| `keymaster64.mbn` | 271,480 | `4c34aa326931d0ca32e1af46dfdfe819` |
+| `lksecapp.mbn` | 57,352 | `7909ee8d443b7161f46f3276063cc5fe` |
+| `prog_emmc_firehose_8953_ddr.mbn` | 399,552 | `fc3df4df9472cfec21ecba444cf324df` |
+
+Which comparisons matter, by finding:
+
+| File | If it matches | If it differs |
+| --- | --- | --- |
+| `tz.mbn` | Every TZ result — `SCR_EL3`/EL2, exception map, EC decode, `x20`, the mailbox — applies verbatim to the handset | All TZ findings would need redoing against the daisy image |
+| `prog_emmc_firehose_8953_ddr.mbn` | The `peek`/`poke` analysis applies | Peek/poke must be re-verified on the daisy programmer |
+| `emmc_appsboot.mbn` | The unlock and protected-partition analysis applies | Re-derive the `+0x10`/`+0x18` control flow |
+| `sbl1.mbn` | The SBL1 auth analysis applies | Re-derive |
+| `devcfg.mbn`, `keymaster64.mbn`, `lksecapp.mbn` | — | Expected to differ; these are per-device config and key material |
 
 ### Unlock is not a mutable bit
 

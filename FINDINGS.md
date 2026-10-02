@@ -1337,7 +1337,49 @@ not generic** — they must be measured on this programmer. The probes at `0x080
 `0x0805e000` in this pass returned nothing, so the stack is not simply there, or the device had
 already begun tearing down.
 
-## Two independent problems
+> [!danger]
+> **CVE-2020-11289 — an OOB write in the TZ command handler, and MSM8953 is named.** This is a
+> better match to what we can actually see in the binary than the previous two.
+
+> [!info]
+> **CVE-2020-11289** (CWE-119, Qualcomm **May 2021** bulletin, published 2021-05-07):
+>
+> *"Out of bound write can occur in **TZ command handler** due to **lack of validation of
+> command ID**"* — and the NVD description names **MSM8953** explicitly, as do CVE-2019-2318,
+> CVE-2020-3619 and CVE-2019-14040.
+
+| | Published | Our `tz.mbn` | Expected |
+| --- | --- | --- | --- |
+| CVE-2020-11289 | May 2021 bulletin | 2020-05-08 | **a year before the fix — unpatched** |
+
+> [!success]
+> **Why this one is the most useful of the four.** The mechanism is a *command-ID validation*
+> failure producing an out-of-bounds **write** — and that is precisely the structure of the SMC
+> dispatch we have already mapped. The FID is masked, range-compared, and used to index
+> dispatch tables:
+>
+> ```
+> 0x86501c94  ldr  x8, [x20]          ; the caller's command
+> 0x86501ca4  and  w9, w8, w26        ; w26 = 0x3f00ffff
+> 0x86501d64  add  w13, w28, w15
+> 0x86501d70  cmp  w13, #4
+> 0x86501d74  b.hi 0x86501dc0          ; bounds check -> default
+> 0x86501d80  ldr  x15, [x15, x13, LSL #3]
+> 0x86501d84  br  x15
+> ```
+>
+> The `0x340105ff`–`0x34010603` family has a proven bounds check. **The question this CVE
+> raises is whether some other command path lacks one** — an under-validated ID reaching a table
+> or a buffer without the same discipline.
+
+> [!caution]
+> **What is established and what is not.** Established: MSM8953 is named; the bug class is an
+> OOB write from an unvalidated command ID in the TZ command handler; our build predates the fix
+> by a year; and the dispatch structure in our binary is exactly the kind of code such a fix
+> would harden. **Not** established: that this specific bug exists in this build, and where. The
+> NVD entry gives no offsets, and no public PoC or write-up surfaced in a GitHub search — the
+> only hits were CVE-metadata mirrors. So this is a lead to *search* with, not a bug we have
+> located.
 
 | | Problem | Status |
 | --- | --- | --- |
